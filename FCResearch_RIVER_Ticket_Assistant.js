@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.18
+// @name         FCResearch → RIVER Ticket Assistant v0.2.19
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.18
+// @version      0.2.19
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
-// @description  Launches RIVER from the PanDash L0 badge and pulls newest PO/vendor directly from FCResearch.
+// @description  Launches RIVER from PanDash L0 and pulls newest PO/vendor directly from FCResearch.
 // @match        *://qi-fcresearch-fe.corp.amazon.com/*
 // @match        *://fcresearch-fe.aka.amazon.com/*
 // @match        *://qi-fcresearch-jp.corp.amazon.com/*
@@ -32,22 +32,22 @@
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function removeLegacyPanel() {
-    document.getElementById('bwu2-ticket-assistant')?.remove();
-    if (!document.getElementById('bwu2-hide-legacy-panel')) {
-      const style = document.createElement('style');
-      style.id = 'bwu2-hide-legacy-panel';
-      style.textContent = '#bwu2-ticket-assistant{display:none!important}';
-      document.documentElement.appendChild(style);
-    }
-    new MutationObserver(() => {
-      document.getElementById('bwu2-ticket-assistant')?.remove();
-    }).observe(document.documentElement, { childList: true, subtree: true });
+    const remove = () => document.getElementById('bwu2-ticket-assistant')?.remove();
+    remove();
+    const style = document.createElement('style');
+    style.textContent = '#bwu2-ticket-assistant{display:none!important}';
+    document.documentElement.appendChild(style);
+    new MutationObserver(remove).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  function rowCells(row) {
+    return [...row.children].filter(node => node.matches?.('th,td'));
   }
 
   function findLabelValue(names, root = document) {
     const wanted = names.map(norm);
     for (const row of root.querySelectorAll('tr')) {
-      const cells = [...row.querySelectorAll(':scope > th, :scope > td')];
+      const cells = rowCells(row);
       if (cells.length < 2) continue;
       if (!wanted.includes(norm(cells[0].textContent))) continue;
       return clean(cells[1].querySelector('a')?.textContent || cells[1].textContent);
@@ -55,33 +55,36 @@
     return '';
   }
 
-  function headersFor(table) {
-    let best = [];
-    let bestScore = -1;
-    for (const row of table.querySelectorAll('tr')) {
-      const cells = [...row.children].filter(el => el.matches?.('th,td'));
-      const headers = cells.map(cell => norm(cell.textContent));
-      const score = [
-        'purchase order', 'inventory owner', 'placed', 'confirmed',
-        'date', 'receiver', 'process path', 'vendor code'
-      ].filter(name => headers.some(header => header === name || header.startsWith(name + ' '))).length;
-      if (score > bestScore) {
-        bestScore = score;
-        best = headers;
+  function tableHeaders(table) {
+    const candidates = [];
+    const addRows = root => {
+      if (!root) return;
+      for (const row of root.querySelectorAll('tr')) {
+        const cells = rowCells(row);
+        if (!cells.length) continue;
+        const headers = cells.map(cell => norm(cell.textContent));
+        const score = ['purchase order', 'inventory owner', 'fc', 'condition', 'placed', 'confirmed', 'date', 'order date']
+          .filter(target => headers.some(header => header === target || header.startsWith(`${target} `))).length;
+        candidates.push({ headers, score });
       }
-    }
-    return best;
+    };
+
+    addRows(table);
+    const wrapper = table.closest('.dataTables_wrapper, .dataTables_scroll') || table.parentElement;
+    if (wrapper && wrapper !== table) addRows(wrapper);
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || null;
   }
 
-  function headerIndex(headers, names) {
-    const wanted = names.map(norm);
-    return headers.findIndex(header => wanted.some(name => header === name || header.startsWith(name + ' ')));
+  function indexOf(headers, aliases) {
+    return headers.findIndex(header => aliases.some(alias => header === alias || header.startsWith(`${alias} `)));
   }
 
-  function parseDate(text) {
-    const value = clean(text);
-    const time = Date.parse(value.includes('T') ? value : value.replace(' ', 'T'));
-    return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+  function parseDate(value) {
+    const match = clean(value).match(/(\d{4})-(\d{2})-(\d{2})(?:\s+|T)(\d{2}):(\d{2}):(\d{2})/);
+    if (!match) return Number.NEGATIVE_INFINITY;
+    const [, y, m, d, hh, mm, ss] = match;
+    return Date.UTC(+y, +m - 1, +d, +hh, +mm, +ss);
   }
 
   function validPO(value) {
@@ -89,36 +92,35 @@
     return /^(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,20}$/.test(po) ? po : '';
   }
 
-  function collectPOCandidates() {
+  function newestPO() {
     const candidates = [];
 
     for (const table of document.querySelectorAll('table')) {
-      const headers = headersFor(table);
-      const poI = headerIndex(headers, ['Purchase Order']);
-      if (poI < 0) continue;
+      const header = tableHeaders(table);
+      if (!header || header.score < 2) continue;
 
-      const placedI = headerIndex(headers, ['Placed']);
-      const confirmedI = headerIndex(headers, ['Confirmed']);
-      const dateI = headerIndex(headers, ['Date']);
-      const orderDateI = headerIndex(headers, ['Order Date']);
+      const poIndex = indexOf(header.headers, ['purchase order']);
+      if (poIndex < 0) continue;
+      const placedIndex = indexOf(header.headers, ['placed']);
+      const confirmedIndex = indexOf(header.headers, ['confirmed']);
+      const dateIndex = indexOf(header.headers, ['date']);
+      const orderDateIndex = indexOf(header.headers, ['order date']);
 
       for (const row of table.querySelectorAll('tbody tr, tr')) {
-        const cells = [...row.children].filter(el => el.matches?.('th,td'));
-        if (!cells[poI]) continue;
-
-        const po = validPO(cells[poI].textContent);
+        const cells = rowCells(row);
+        if (!cells[poIndex]) continue;
+        const po = validPO(cells[poIndex].textContent);
         if (!po) continue;
 
-        const placed = placedI >= 0 ? clean(cells[placedI]?.textContent) : '';
-        const confirmed = confirmedI >= 0 ? clean(cells[confirmedI]?.textContent) : '';
-        const date = dateI >= 0 ? clean(cells[dateI]?.textContent) : '';
-        const orderDate = orderDateI >= 0 ? clean(cells[orderDateI]?.textContent) : '';
-        const displayDate = placed || confirmed || date || orderDate;
-        const timestamp = Math.max(
-          parseDate(placed), parseDate(confirmed), parseDate(date), parseDate(orderDate)
-        );
-
-        candidates.push({ po, orderDate: displayDate, timestamp });
+        const placed = placedIndex >= 0 ? clean(cells[placedIndex]?.textContent) : '';
+        const confirmed = confirmedIndex >= 0 ? clean(cells[confirmedIndex]?.textContent) : '';
+        const date = dateIndex >= 0 ? clean(cells[dateIndex]?.textContent) : '';
+        const orderDate = orderDateIndex >= 0 ? clean(cells[orderDateIndex]?.textContent) : '';
+        candidates.push({
+          po,
+          orderDate: placed || confirmed || date || orderDate,
+          timestamp: Math.max(parseDate(placed), parseDate(confirmed), parseDate(date), parseDate(orderDate))
+        });
       }
     }
 
@@ -127,15 +129,10 @@
       const current = unique.get(item.po);
       if (!current || item.timestamp > current.timestamp) unique.set(item.po, item);
     }
-
-    return [...unique.values()].sort((a, b) => b.timestamp - a.timestamp);
+    return [...unique.values()].sort((a, b) => b.timestamp - a.timestamp)[0] || null;
   }
 
-  function newestPO() {
-    return collectPOCandidates()[0] || null;
-  }
-
-  async function quickNewestPO(timeoutMs = 1500) {
+  async function waitForPO(timeoutMs = 2000) {
     const deadline = Date.now() + timeoutMs;
     let po = newestPO();
     while (!po && Date.now() < deadline) {
@@ -150,7 +147,7 @@
     return /^[A-Z0-9]{1,6}$/.test(code) && code !== 'N/A' ? code : '';
   }
 
-  function fetchVendorFromPO(po) {
+  function fetchVendor(po) {
     return new Promise(resolve => {
       GM_xmlhttpRequest({
         method: 'POST',
@@ -198,12 +195,11 @@
     const fnsku = /^X0[A-Z0-9]+$/i.test(rawFnsku) ? rawFnsku : '';
     const title = findLabelValue(['Title']);
     const sortableText = norm(findLabelValue(['Sortable']));
-    const po = await quickNewestPO();
+    const po = await waitForPO();
+    const vendorCode = po ? await fetchVendor(po.po) : '';
 
     if (!asin) throw new Error('ASIN not found');
     if (!title) throw new Error('Title not found');
-
-    const vendorCode = po ? await fetchVendorFromPO(po.po) : '';
 
     return {
       asin,
@@ -223,7 +219,7 @@
     };
   }
 
-  function installFCResearchClick() {
+  function installClick() {
     let busy = false;
     const handler = async event => {
       if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
@@ -238,7 +234,8 @@
       badge.setAttribute('aria-busy', 'true');
 
       try {
-        GM_setValue(STORAGE_KEY, await buildPayload());
+        const payload = await buildPayload();
+        GM_setValue(STORAGE_KEY, payload);
         GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
       } catch (error) {
         alert(`RIVER Ticket Assistant failed: ${error.message}`);
@@ -252,9 +249,6 @@
     document.addEventListener('keydown', handler, true);
   }
 
-  if (location.hostname === 'river.amazon.com') {
-    removeLegacyPanel();
-  } else if (/fcresearch|qifcr/i.test(location.hostname)) {
-    installFCResearchClick();
-  }
+  if (location.hostname === 'river.amazon.com') removeLegacyPanel();
+  else if (/fcresearch|qifcr/i.test(location.hostname)) installClick();
 })();
