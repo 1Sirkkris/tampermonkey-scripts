@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         FCResearch → RIVER Ticket Assistant v0.2.10
-// @namespace    bwu2-ticket-assistant
 // @version      0.2.10
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.user.js
 // @description  Captures FCResearch data and auto-advances fixed Hazmat RIVER steps while preserving manual checkpoints.
 // @match        *://qi-fcresearch-fe.corp.amazon.com/*
 // @match        *://fcresearch-fe.aka.amazon.com/*
