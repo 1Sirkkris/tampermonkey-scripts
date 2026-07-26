@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.14
+// @name         FCResearch → RIVER Ticket Assistant v0.2.15
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.14
+// @version      0.2.15
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
-// @description  Runs the RIVER core, reads the newest PO/vendor directly, and launches from the PanDash L0 badge.
+// @description  Launches RIVER from the PanDash L0 badge and pulls newest PO/vendor directly from FCResearch.
 // @match        *://qi-fcresearch-fe.corp.amazon.com/*
 // @match        *://fcresearch-fe.aka.amazon.com/*
 // @match        *://qi-fcresearch-jp.corp.amazon.com/*
@@ -14,391 +14,194 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_openInTab
+// @grant        GM_xmlhttpRequest
+// @connect      qi-fcresearch-fe.corp.amazon.com
+// @connect      fcresearch-fe.aka.amazon.com
+// @connect      qi-fcresearch-jp.corp.amazon.com
+// @connect      qifcr.fe.aftx.amazonoperations.app
 // @run-at       document-idle
 // ==/UserScript==
 
 (() => {
-    'use strict';
+  'use strict';
 
-    const STORAGE_KEY = 'bwu2_ticket_assistant_payload_v3';
-    const PO_LOOKUP_REQUEST_KEY = 'bwu2_ticket_assistant_po_lookup_request_v1';
-    const PO_LOOKUP_RESULT_KEY = 'bwu2_ticket_assistant_po_lookup_result_v1';
-    const RIVER_URL = 'https://river.amazon.com/BWU2/workflows?buildingType=fc&q0=3654ec14-7232-4f65-84c3-87927cdb4d0c&q1=0dbb253e-c43a-4a8b-a316-e32b8ab9be21&id=0dbb253e-c43a-4a8b-a316-e32b8ab9be21';
-    const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
-    const norm = value => clean(value).toLowerCase();
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const STORAGE_KEY = 'bwu2_ticket_assistant_payload_v3';
+  const RIVER_URL = 'https://river.amazon.com/BWU2/workflows?buildingType=fc&q0=3654ec14-7232-4f65-84c3-87927cdb4d0c&q1=0dbb253e-c43a-4a8b-a316-e32b8ab9be21&id=0dbb253e-c43a-4a8b-a316-e32b8ab9be21';
+  const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const norm = value => clean(value).toLowerCase();
 
-    function validVendorCode(value) {
-        const code = clean(value).toUpperCase();
-        return /^[A-Z0-9]{1,6}$/.test(code) && code !== 'N/A' ? code : '';
+  function findLabelValue(names, root = document) {
+    const wanted = names.map(norm);
+    for (const row of root.querySelectorAll('tr')) {
+      const cells = [...row.querySelectorAll(':scope > th, :scope > td')];
+      if (cells.length < 2) continue;
+      if (!wanted.includes(norm(cells[0].textContent))) continue;
+      return clean(cells[1].querySelector('a')?.textContent || cells[1].textContent);
     }
+    return '';
+  }
 
-    function findLabelValue(names, root = document) {
-        const wanted = names.map(norm);
-        for (const row of root.querySelectorAll('tr')) {
-            const cells = [...row.querySelectorAll(':scope > th, :scope > td')];
-            if (cells.length < 2) continue;
-            if (!wanted.includes(norm(cells[0].textContent))) continue;
-            const link = cells[1].querySelector('a');
-            return clean(link?.textContent || cells[1].textContent);
-        }
-        return '';
+  function headersFor(table) {
+    let best = [];
+    let bestScore = -1;
+    for (const row of table.querySelectorAll('tr')) {
+      const cells = [...row.children].filter(el => el.matches?.('th,td'));
+      const headers = cells.map(cell => norm(cell.textContent));
+      const score = ['purchase order', 'inventory owner', 'placed', 'confirmed']
+        .filter(name => headers.some(header => header === name || header.startsWith(name + ' '))).length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = headers;
+      }
     }
+    return best;
+  }
 
-    function headerMap(table) {
-        let best = [];
-        let score = -1;
-        for (const row of table.querySelectorAll('tr')) {
-            const cells = [...row.children].filter(node => node.matches?.('th,td'));
-            const names = cells.map(cell => norm(cell.textContent));
-            const current = ['purchase order', 'inventory owner', 'placed', 'confirmed', 'vendor code']
-                .filter(name => names.some(text => text === name || text.startsWith(`${name} `))).length;
-            if (current > score) {
-                score = current;
-                best = cells;
-            }
-        }
-        return best.map(cell => norm(cell.textContent));
-    }
+  function headerIndex(headers, names) {
+    const wanted = names.map(norm);
+    return headers.findIndex(header => wanted.some(name => header === name || header.startsWith(name + ' ')));
+  }
 
-    function findIndex(headers, names) {
-        const wanted = names.map(norm);
-        return headers.findIndex(header => wanted.some(name => header === name || header.startsWith(`${name} `)));
-    }
+  function parseDate(text) {
+    const time = Date.parse(clean(text).replace(' ', 'T'));
+    return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
+  }
 
-    function parseDate(value) {
-        const text = clean(value).replace(' ', 'T');
-        const parsed = Date.parse(text);
-        return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
-    }
+  function newestPO() {
+    for (const table of document.querySelectorAll('table')) {
+      const headers = headersFor(table);
+      const poI = headerIndex(headers, ['Purchase Order']);
+      const ownerI = headerIndex(headers, ['Inventory Owner']);
+      const placedI = headerIndex(headers, ['Placed']);
+      const confirmedI = headerIndex(headers, ['Confirmed']);
+      if (poI < 0 || ownerI < 0 || (placedI < 0 && confirmedI < 0)) continue;
 
-    function newestPOFromMainTable() {
-        const tables = [...document.querySelectorAll('table')];
-        let bestTable = null;
-        let bestHeaders = null;
-
-        for (const table of tables) {
-            const headers = headerMap(table);
-            if (findIndex(headers, ['Purchase Order']) < 0) continue;
-            if (findIndex(headers, ['Inventory Owner']) < 0) continue;
-            if (findIndex(headers, ['Placed', 'Confirmed']) < 0) continue;
-            bestTable = table;
-            bestHeaders = headers;
-            break;
-        }
-
-        if (!bestTable) return null;
-        const poIndex = findIndex(bestHeaders, ['Purchase Order']);
-        const ownerIndex = findIndex(bestHeaders, ['Inventory Owner']);
-        const placedIndex = findIndex(bestHeaders, ['Placed']);
-        const confirmedIndex = findIndex(bestHeaders, ['Confirmed']);
-        const candidates = [];
-
-        for (const row of bestTable.querySelectorAll('tbody tr, tr')) {
-            const cells = [...row.children].filter(node => node.matches?.('th,td'));
-            if (cells.length <= Math.max(poIndex, ownerIndex, placedIndex, confirmedIndex)) continue;
-            const po = clean(cells[poIndex]?.textContent);
-            if (!/^(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,20}$/i.test(po)) continue;
-            const link = cells[poIndex]?.querySelector('a');
-            const placed = clean(cells[placedIndex]?.textContent);
-            const confirmed = clean(cells[confirmedIndex]?.textContent);
-            candidates.push({
-                po,
-                inventoryOwner: clean(cells[ownerIndex]?.textContent),
-                orderDate: placed || confirmed,
-                timestamp: Math.max(parseDate(placed), parseDate(confirmed)),
-                href: link?.href || link?.getAttribute('href') || ''
-            });
-        }
-
-        candidates.sort((a, b) => b.timestamp - a.timestamp);
-        return candidates[0] || null;
-    }
-
-    function vendorFromCurrentPOItems(po) {
-        for (const table of document.querySelectorAll('table')) {
-            const headers = headerMap(table);
-            const poIndex = findIndex(headers, ['Purchase Order']);
-            const vendorIndex = findIndex(headers, ['Vendor Code']);
-            if (poIndex < 0 || vendorIndex < 0) continue;
-
-            for (const row of table.querySelectorAll('tbody tr, tr')) {
-                const cells = [...row.children].filter(node => node.matches?.('th,td'));
-                if (clean(cells[poIndex]?.textContent) !== po) continue;
-                const vendor = validVendorCode(cells[vendorIndex]?.textContent);
-                if (vendor) return vendor;
-            }
-        }
-        return '';
-    }
-
-    function vendorFromRenderedPOPage(expectedPO = '') {
-        const pagePO = clean(findLabelValue(['Purchase Order']));
-        if (expectedPO && pagePO && pagePO !== expectedPO) return '';
-
-        const direct = validVendorCode(findLabelValue(['Vendor Code']));
-        if (direct) return direct;
-
-        return vendorFromCurrentPOItems(expectedPO || pagePO);
-    }
-
-    async function fulfilPendingPOLookup() {
-        const request = GM_getValue(PO_LOOKUP_REQUEST_KEY, null);
-        if (!request?.token || !request?.po) return false;
-        if (Date.now() - Number(request.createdAt || 0) > 20000) return false;
-
-        const searched = new URLSearchParams(location.search).get('s') || '';
-        const pageText = clean(document.body?.innerText);
-        if (searched !== request.po && !pageText.includes(request.po)) return false;
-
-        const deadline = Date.now() + 12000;
-        while (Date.now() < deadline) {
-            const vendorCode = vendorFromRenderedPOPage(request.po);
-            if (vendorCode) {
-                GM_setValue(PO_LOOKUP_RESULT_KEY, {
-                    token: request.token,
-                    po: request.po,
-                    vendorCode,
-                    foundAt: Date.now()
-                });
-                return true;
-            }
-            await sleep(250);
-        }
-
-        GM_setValue(PO_LOOKUP_RESULT_KEY, {
-            token: request.token,
-            po: request.po,
-            vendorCode: '',
-            error: 'Vendor Code not found on rendered PO page.',
-            foundAt: Date.now()
+      const rows = [];
+      for (const row of table.querySelectorAll('tbody tr, tr')) {
+        const cells = [...row.children].filter(el => el.matches?.('th,td'));
+        if (!cells.length || !cells[poI]) continue;
+        const po = clean(cells[poI].textContent);
+        if (!/^(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,20}$/i.test(po)) continue;
+        const placed = placedI >= 0 ? clean(cells[placedI]?.textContent) : '';
+        const confirmed = confirmedI >= 0 ? clean(cells[confirmedI]?.textContent) : '';
+        rows.push({
+          po,
+          orderDate: placed || confirmed,
+          timestamp: Math.max(parseDate(placed), parseDate(confirmed))
         });
-        return true;
+      }
+      rows.sort((a, b) => b.timestamp - a.timestamp);
+      if (rows[0]) return rows[0];
     }
+    return null;
+  }
 
-    async function vendorFromBackgroundPOPage(poInfo) {
-        if (!poInfo?.po || !poInfo?.href) return '';
+  function validVendor(value) {
+    const code = clean(value).toUpperCase();
+    return /^[A-Z0-9]{1,6}$/.test(code) && code !== 'N/A' ? code : '';
+  }
 
-        const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        GM_setValue(PO_LOOKUP_RESULT_KEY, null);
-        GM_setValue(PO_LOOKUP_REQUEST_KEY, {
-            token,
-            po: poInfo.po,
-            createdAt: Date.now()
-        });
+  function fetchVendorFromPO(po) {
+    return new Promise(resolve => {
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: `${location.origin}/BWU2/results/purchase-order`,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'Accept': 'text/html, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        data: `s=${encodeURIComponent(po)}`,
+        timeout: 15000,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) return resolve('');
+          const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
+          resolve(validVendor(findLabelValue(['Vendor Code'], doc)));
+        },
+        onerror: () => resolve(''),
+        ontimeout: () => resolve('')
+      });
+    });
+  }
 
-        const tab = GM_openInTab(new URL(poInfo.href, location.href).href, {
-            active: false,
-            insert: true,
-            setParent: true
-        });
-
-        const deadline = Date.now() + 15000;
-        try {
-            while (Date.now() < deadline) {
-                const result = GM_getValue(PO_LOOKUP_RESULT_KEY, null);
-                if (result?.token === token && result?.po === poInfo.po) {
-                    return validVendorCode(result.vendorCode);
-                }
-                await sleep(250);
-            }
-            return '';
-        } finally {
-            GM_setValue(PO_LOOKUP_REQUEST_KEY, null);
-            GM_setValue(PO_LOOKUP_RESULT_KEY, null);
-            try { tab?.close?.(); } catch (_) {}
-        }
+  function inventoryQuantity() {
+    const table = document.querySelector('#table-inventory');
+    if (!table) return 0;
+    const wrapper = table.closest('.dataTables_wrapper') || table.parentElement;
+    for (const th of wrapper?.querySelectorAll('th') || []) {
+      const match = clean(th.textContent).match(/^quantity\s*\(([\d,]+)\)/i);
+      if (match) return Number(match[1].replace(/,/g, '')) || 0;
     }
+    return 0;
+  }
 
-    function inventoryQuantity() {
-        const table = document.querySelector('#table-inventory');
-        if (!table) return 0;
-        const wrapper = table.closest('.dataTables_wrapper') || table.parentElement;
-        for (const heading of wrapper?.querySelectorAll('th') || []) {
-            const match = clean(heading.textContent).match(/^quantity\s*\(([\d,]+)\)/i);
-            if (match) return Number(match[1].replace(/,/g, '')) || 0;
-        }
-        return [...table.querySelectorAll('tbody tr')].reduce((total, row) => {
-            const numbers = [...row.children].map(cell => Number(clean(cell.textContent).replace(/,/g, '')));
-            return total + (numbers.find(Number.isFinite) || 0);
-        }, 0);
-    }
+  function formatCost(value) {
+    const text = clean(value);
+    if (!text) return 'n/a';
+    if (/^AUD\b/i.test(text)) return text;
+    const match = text.match(/\d+(?:,\d{3})*(?:\.\d+)?/);
+    return match ? `AUD ${match[0].replace(/,/g, '')}` : text;
+  }
 
-    function formatCost(value) {
-        const text = clean(value);
-        if (!text) return 'n/a';
-        if (/^AUD\b/i.test(text)) return text;
-        const match = text.match(/\d+(?:,\d{3})*(?:\.\d+)?/);
-        return match ? `AUD ${match[0].replace(/,/g, '')}` : text;
-    }
+  async function buildPayload() {
+    const asin = findLabelValue(['ASIN']);
+    const rawFnsku = findLabelValue(['FNSku', 'FNSKU']);
+    const fnsku = /^X0[A-Z0-9]+$/i.test(rawFnsku) ? rawFnsku : '';
+    const title = findLabelValue(['Title']);
+    const sortableText = norm(findLabelValue(['Sortable']));
+    const po = newestPO();
 
-    async function captureImprovedPayload() {
-        const asin = findLabelValue(['ASIN']);
-        const foundFnsku = findLabelValue(['FNSku', 'FNSKU']);
-        const fnsku = /^X0[A-Z0-9]+$/i.test(foundFnsku) ? foundFnsku : '';
-        const title = findLabelValue(['Title']);
-        const sortableText = norm(findLabelValue(['Sortable']));
-        const sortable = sortableText === 'true' || sortableText === 'yes';
-        const newest = newestPOFromMainTable();
+    if (!asin) throw new Error('ASIN not found');
+    if (!title) throw new Error('Title not found');
 
-        if (!asin) throw new Error('ASIN not found.');
-        if (!title) throw new Error('Title not found.');
+    const vendorCode = po ? await fetchVendorFromPO(po.po) : '';
 
-        let vendorCode = newest ? vendorFromCurrentPOItems(newest.po) : '';
-        if (!vendorCode && newest) vendorCode = await vendorFromBackgroundPOPage(newest);
+    return {
+      asin,
+      fnsku,
+      processingId: fnsku || asin,
+      title,
+      purchaseOrder: po?.po || 'n/a - no PO available',
+      vendorCode: vendorCode || 'n/a',
+      inventoryCost: formatCost(findLabelValue(['List Price'])),
+      physicalLocation: 'N/A',
+      orderDate: po?.orderDate || '',
+      sortable: sortableText === 'true' || sortableText === 'yes',
+      inventoryQuantity: inventoryQuantity(),
+      shipmentsImpacted: 0,
+      sourceUrl: location.href,
+      capturedAt: Date.now()
+    };
+  }
 
-        return {
-            asin,
-            fnsku,
-            processingId: fnsku || asin,
-            title,
-            purchaseOrder: newest?.po || 'n/a - no PO available',
-            vendorCode: vendorCode || 'n/a',
-            inventoryCost: formatCost(findLabelValue(['List Price'])),
-            physicalLocation: 'N/A',
-            orderDate: newest?.orderDate || '',
-            sortable,
-            inventoryQuantity: inventoryQuantity(),
-            shipmentsImpacted: 0,
-            sourceUrl: location.href,
-            capturedAt: Date.now()
-        };
-    }
+  function installFCResearchClick() {
+    let busy = false;
+    const handler = async event => {
+      if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+      const badge = event.target instanceof Element
+        ? event.target.closest('[data-section-type="product"] .fc-hazmat.fc-river-l0')
+        : null;
+      if (!badge || busy) return;
 
-    function installFCResearchLaunch() {
-        let busy = false;
-        const launchFromL0 = async event => {
-            if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
-            const badge = event.target instanceof Element
-                ? event.target.closest('[data-section-type="product"] .fc-hazmat.fc-river-l0')
-                : null;
-            if (!badge || busy) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      busy = true;
+      badge.setAttribute('aria-busy', 'true');
 
-            event.preventDefault();
-            event.stopImmediatePropagation();
-            busy = true;
-            badge.setAttribute('aria-busy', 'true');
+      try {
+        GM_setValue(STORAGE_KEY, await buildPayload());
+        GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
+      } catch (error) {
+        alert(`RIVER Ticket Assistant failed: ${error.message}`);
+      } finally {
+        busy = false;
+        badge.removeAttribute('aria-busy');
+      }
+    };
 
-            try {
-                const payload = await captureImprovedPayload();
-                GM_setValue(STORAGE_KEY, payload);
-                GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
-            } catch (error) {
-                console.error('[Ticket Assistant] launch failed:', error);
-                alert(`RIVER Ticket Assistant failed: ${error.message}`);
-            } finally {
-                busy = false;
-                badge.removeAttribute('aria-busy');
-            }
-        };
+    document.addEventListener('click', handler, true);
+    document.addEventListener('keydown', handler, true);
+  }
 
-        document.addEventListener('click', launchFromL0, true);
-        document.addEventListener('keydown', launchFromL0, true);
-    }
-
-    function installFinalStepSafetyNet() {
-        let advancing = false;
-        let lastAdvanceAttempt = 0;
-
-        const nativeSelectSetter = Object.getOwnPropertyDescriptor(
-            HTMLSelectElement.prototype,
-            'value'
-        )?.set;
-
-        const selectYesReliably = select => {
-            const yes = [...select.options].find(option => norm(option.textContent) === 'yes');
-            if (!yes) return false;
-
-            if (nativeSelectSetter) nativeSelectSetter.call(select, yes.value);
-            else select.value = yes.value;
-            yes.selected = true;
-            select.selectedIndex = yes.index;
-            select.dispatchEvent(new Event('input', { bubbles: true }));
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-            select.dispatchEvent(new KeyboardEvent('keyup', {
-                bubbles: true,
-                key: 'Enter',
-                code: 'Enter'
-            }));
-
-            const selected = select.options[select.selectedIndex];
-            return select.value === yes.value && norm(selected?.textContent) === 'yes';
-        };
-
-        const findNext = () => [...document.querySelectorAll(
-            'button, input[type="button"], input[type="submit"], a'
-        )].find(element => {
-            const text = norm(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
-            return text === 'next';
-        });
-
-        const nextIsReady = next => Boolean(
-            next
-            && next.isConnected
-            && !next.disabled
-            && next.getAttribute('aria-disabled') !== 'true'
-            && !next.classList.contains('disabled')
-        );
-
-        const run = async () => {
-            const pageText = norm(document.body?.innerText);
-            if (!pageText.includes('images instruction and check window')) return;
-            if (advancing) return;
-
-            const select = [...document.querySelectorAll('select')].find(item =>
-                [...item.options].some(option => norm(option.textContent) === 'yes')
-            );
-            if (!select) return;
-
-            advancing = true;
-            try {
-                let selected = false;
-                for (let attempt = 0; attempt < 6; attempt += 1) {
-                    selected = selectYesReliably(select);
-                    await sleep(180 + attempt * 70);
-                    const current = select.options[select.selectedIndex];
-                    if (selected && norm(current?.textContent) === 'yes') break;
-                }
-                if (!selected) return;
-
-                const deadline = Date.now() + 8000;
-                while (Date.now() < deadline) {
-                    const next = findNext();
-                    if (nextIsReady(next)) {
-                        lastAdvanceAttempt = Date.now();
-                        next.click();
-                        await sleep(500);
-
-                        if (!norm(document.body?.innerText).includes('images instruction and check window')) {
-                            return;
-                        }
-                    }
-                    await sleep(200);
-                }
-            } finally {
-                advancing = false;
-            }
-        };
-
-        const observer = new MutationObserver(() => void run());
-        observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ['disabled', 'aria-disabled', 'class', 'value']
-        });
-
-        setInterval(() => {
-            if (Date.now() - lastAdvanceAttempt > 600) void run();
-        }, 400);
-        void run();
-    }
-
-    if (/fcresearch|qifcr/i.test(location.hostname)) {
-        void fulfilPendingPOLookup().then(handled => {
-            if (!handled) installFCResearchLaunch();
-        });
-    } else if (location.hostname === 'river.amazon.com') {
-        installFinalStepSafetyNet();
-    }
+  if (/fcresearch|qifcr/i.test(location.hostname)) installFCResearchClick();
 })();
