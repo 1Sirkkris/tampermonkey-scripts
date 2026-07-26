@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.13
+// @name         FCResearch → RIVER Ticket Assistant v0.2.14
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.13
+// @version      0.2.14
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @description  Runs the RIVER core, reads the newest PO/vendor directly, and launches from the PanDash L0 badge.
@@ -21,9 +21,17 @@
     'use strict';
 
     const STORAGE_KEY = 'bwu2_ticket_assistant_payload_v3';
+    const PO_LOOKUP_REQUEST_KEY = 'bwu2_ticket_assistant_po_lookup_request_v1';
+    const PO_LOOKUP_RESULT_KEY = 'bwu2_ticket_assistant_po_lookup_result_v1';
     const RIVER_URL = 'https://river.amazon.com/BWU2/workflows?buildingType=fc&q0=3654ec14-7232-4f65-84c3-87927cdb4d0c&q1=0dbb253e-c43a-4a8b-a316-e32b8ab9be21&id=0dbb253e-c43a-4a8b-a316-e32b8ab9be21';
     const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
     const norm = value => clean(value).toLowerCase();
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function validVendorCode(value) {
+        const code = clean(value).toUpperCase();
+        return /^[A-Z0-9]{1,6}$/.test(code) && code !== 'N/A' ? code : '';
+    }
 
     function findLabelValue(names, root = document) {
         const wanted = names.map(norm);
@@ -117,26 +125,88 @@
             for (const row of table.querySelectorAll('tbody tr, tr')) {
                 const cells = [...row.children].filter(node => node.matches?.('th,td'));
                 if (clean(cells[poIndex]?.textContent) !== po) continue;
-                const vendor = clean(cells[vendorIndex]?.textContent);
-                if (vendor && norm(vendor) !== 'vendor code') return vendor;
+                const vendor = validVendorCode(cells[vendorIndex]?.textContent);
+                if (vendor) return vendor;
             }
         }
         return '';
     }
 
-    async function vendorFromPOPage(poInfo) {
-        if (!poInfo?.href) return '';
+    function vendorFromRenderedPOPage(expectedPO = '') {
+        const pagePO = clean(findLabelValue(['Purchase Order']));
+        if (expectedPO && pagePO && pagePO !== expectedPO) return '';
+
+        const direct = validVendorCode(findLabelValue(['Vendor Code']));
+        if (direct) return direct;
+
+        return vendorFromCurrentPOItems(expectedPO || pagePO);
+    }
+
+    async function fulfilPendingPOLookup() {
+        const request = GM_getValue(PO_LOOKUP_REQUEST_KEY, null);
+        if (!request?.token || !request?.po) return false;
+        if (Date.now() - Number(request.createdAt || 0) > 20000) return false;
+
+        const searched = new URLSearchParams(location.search).get('s') || '';
+        const pageText = clean(document.body?.innerText);
+        if (searched !== request.po && !pageText.includes(request.po)) return false;
+
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+            const vendorCode = vendorFromRenderedPOPage(request.po);
+            if (vendorCode) {
+                GM_setValue(PO_LOOKUP_RESULT_KEY, {
+                    token: request.token,
+                    po: request.po,
+                    vendorCode,
+                    foundAt: Date.now()
+                });
+                return true;
+            }
+            await sleep(250);
+        }
+
+        GM_setValue(PO_LOOKUP_RESULT_KEY, {
+            token: request.token,
+            po: request.po,
+            vendorCode: '',
+            error: 'Vendor Code not found on rendered PO page.',
+            foundAt: Date.now()
+        });
+        return true;
+    }
+
+    async function vendorFromBackgroundPOPage(poInfo) {
+        if (!poInfo?.po || !poInfo?.href) return '';
+
+        const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        GM_setValue(PO_LOOKUP_RESULT_KEY, null);
+        GM_setValue(PO_LOOKUP_REQUEST_KEY, {
+            token,
+            po: poInfo.po,
+            createdAt: Date.now()
+        });
+
+        const tab = GM_openInTab(new URL(poInfo.href, location.href).href, {
+            active: false,
+            insert: true,
+            setParent: true
+        });
+
+        const deadline = Date.now() + 15000;
         try {
-            const response = await fetch(new URL(poInfo.href, location.href), {
-                credentials: 'include',
-                cache: 'no-store'
-            });
-            if (!response.ok) return '';
-            const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-            return findLabelValue(['Vendor Code'], doc);
-        } catch (error) {
-            console.warn('[Ticket Assistant] PO peek failed:', error);
+            while (Date.now() < deadline) {
+                const result = GM_getValue(PO_LOOKUP_RESULT_KEY, null);
+                if (result?.token === token && result?.po === poInfo.po) {
+                    return validVendorCode(result.vendorCode);
+                }
+                await sleep(250);
+            }
             return '';
+        } finally {
+            GM_setValue(PO_LOOKUP_REQUEST_KEY, null);
+            GM_setValue(PO_LOOKUP_RESULT_KEY, null);
+            try { tab?.close?.(); } catch (_) {}
         }
     }
 
@@ -175,10 +245,7 @@
         if (!title) throw new Error('Title not found.');
 
         let vendorCode = newest ? vendorFromCurrentPOItems(newest.po) : '';
-        if (!vendorCode && newest) vendorCode = await vendorFromPOPage(newest);
-        if (!vendorCode && newest?.inventoryOwner) {
-            vendorCode = newest.inventoryOwner.replace(/_FBA$/i, '');
-        }
+        if (!vendorCode && newest) vendorCode = await vendorFromBackgroundPOPage(newest);
 
         return {
             asin,
@@ -288,7 +355,7 @@
                 let selected = false;
                 for (let attempt = 0; attempt < 6; attempt += 1) {
                     selected = selectYesReliably(select);
-                    await new Promise(resolve => setTimeout(resolve, 180 + attempt * 70));
+                    await sleep(180 + attempt * 70);
                     const current = select.options[select.selectedIndex];
                     if (selected && norm(current?.textContent) === 'yes') break;
                 }
@@ -300,13 +367,13 @@
                     if (nextIsReady(next)) {
                         lastAdvanceAttempt = Date.now();
                         next.click();
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await sleep(500);
 
                         if (!norm(document.body?.innerText).includes('images instruction and check window')) {
                             return;
                         }
                     }
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await sleep(200);
                 }
             } finally {
                 advancing = false;
@@ -327,6 +394,11 @@
         void run();
     }
 
-    if (/fcresearch|qifcr/i.test(location.hostname)) installFCResearchLaunch();
-    else if (location.hostname === 'river.amazon.com') installFinalStepSafetyNet();
+    if (/fcresearch|qifcr/i.test(location.hostname)) {
+        void fulfilPendingPOLookup().then(handled => {
+            if (!handled) installFCResearchLaunch();
+        });
+    } else if (location.hostname === 'river.amazon.com') {
+        installFinalStepSafetyNet();
+    }
 })();
