@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.15
+// @name         FCResearch → RIVER Ticket Assistant v0.2.16
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.15
+// @version      0.2.16
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @description  Launches RIVER from the PanDash L0 badge and pulls newest PO/vendor directly from FCResearch.
@@ -29,6 +29,7 @@
   const RIVER_URL = 'https://river.amazon.com/BWU2/workflows?buildingType=fc&q0=3654ec14-7232-4f65-84c3-87927cdb4d0c&q1=0dbb253e-c43a-4a8b-a316-e32b8ab9be21&id=0dbb253e-c43a-4a8b-a316-e32b8ab9be21';
   const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
   const norm = value => clean(value).toLowerCase();
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function findLabelValue(names, root = document) {
     const wanted = names.map(norm);
@@ -96,6 +97,16 @@
     return null;
   }
 
+  async function waitForNewestPO(timeout = 10000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const po = newestPO();
+      if (po) return po;
+      await sleep(250);
+    }
+    return null;
+  }
+
   function validVendor(value) {
     const code = clean(value).toUpperCase();
     return /^[A-Z0-9]{1,6}$/.test(code) && code !== 'N/A' ? code : '';
@@ -149,11 +160,11 @@
     const fnsku = /^X0[A-Z0-9]+$/i.test(rawFnsku) ? rawFnsku : '';
     const title = findLabelValue(['Title']);
     const sortableText = norm(findLabelValue(['Sortable']));
-    const po = newestPO();
 
     if (!asin) throw new Error('ASIN not found');
     if (!title) throw new Error('Title not found');
 
+    const po = await waitForNewestPO();
     const vendorCode = po ? await fetchVendorFromPO(po.po) : '';
 
     return {
