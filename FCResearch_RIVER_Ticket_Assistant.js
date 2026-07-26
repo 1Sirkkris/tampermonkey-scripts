@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.17
+// @name         FCResearch → RIVER Ticket Assistant v0.2.18
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.17
+// @version      0.2.18
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @description  Launches RIVER from the PanDash L0 badge and pulls newest PO/vendor directly from FCResearch.
@@ -31,6 +31,19 @@
   const norm = value => clean(value).toLowerCase();
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+  function removeLegacyPanel() {
+    document.getElementById('bwu2-ticket-assistant')?.remove();
+    if (!document.getElementById('bwu2-hide-legacy-panel')) {
+      const style = document.createElement('style');
+      style.id = 'bwu2-hide-legacy-panel';
+      style.textContent = '#bwu2-ticket-assistant{display:none!important}';
+      document.documentElement.appendChild(style);
+    }
+    new MutationObserver(() => {
+      document.getElementById('bwu2-ticket-assistant')?.remove();
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   function findLabelValue(names, root = document) {
     const wanted = names.map(norm);
     for (const row of root.querySelectorAll('tr')) {
@@ -48,8 +61,10 @@
     for (const row of table.querySelectorAll('tr')) {
       const cells = [...row.children].filter(el => el.matches?.('th,td'));
       const headers = cells.map(cell => norm(cell.textContent));
-      const score = ['purchase order', 'inventory owner', 'placed', 'confirmed']
-        .filter(name => headers.some(header => header === name || header.startsWith(name + ' '))).length;
+      const score = [
+        'purchase order', 'inventory owner', 'placed', 'confirmed',
+        'date', 'receiver', 'process path', 'vendor code'
+      ].filter(name => headers.some(header => header === name || header.startsWith(name + ' '))).length;
       if (score > bestScore) {
         bestScore = score;
         best = headers;
@@ -64,44 +79,67 @@
   }
 
   function parseDate(text) {
-    const time = Date.parse(clean(text).replace(' ', 'T'));
+    const value = clean(text);
+    const time = Date.parse(value.includes('T') ? value : value.replace(' ', 'T'));
     return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
   }
 
-  function newestPO() {
+  function validPO(value) {
+    const po = clean(value).toUpperCase();
+    return /^(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,20}$/.test(po) ? po : '';
+  }
+
+  function collectPOCandidates() {
+    const candidates = [];
+
     for (const table of document.querySelectorAll('table')) {
       const headers = headersFor(table);
       const poI = headerIndex(headers, ['Purchase Order']);
-      const ownerI = headerIndex(headers, ['Inventory Owner']);
+      if (poI < 0) continue;
+
       const placedI = headerIndex(headers, ['Placed']);
       const confirmedI = headerIndex(headers, ['Confirmed']);
-      if (poI < 0 || ownerI < 0 || (placedI < 0 && confirmedI < 0)) continue;
+      const dateI = headerIndex(headers, ['Date']);
+      const orderDateI = headerIndex(headers, ['Order Date']);
 
-      const rows = [];
       for (const row of table.querySelectorAll('tbody tr, tr')) {
         const cells = [...row.children].filter(el => el.matches?.('th,td'));
-        if (!cells.length || !cells[poI]) continue;
-        const po = clean(cells[poI].textContent);
-        if (!/^(?=.*[A-Z])(?=.*\d)[A-Z0-9]{6,20}$/i.test(po)) continue;
+        if (!cells[poI]) continue;
+
+        const po = validPO(cells[poI].textContent);
+        if (!po) continue;
+
         const placed = placedI >= 0 ? clean(cells[placedI]?.textContent) : '';
         const confirmed = confirmedI >= 0 ? clean(cells[confirmedI]?.textContent) : '';
-        rows.push({
-          po,
-          orderDate: placed || confirmed,
-          timestamp: Math.max(parseDate(placed), parseDate(confirmed))
-        });
+        const date = dateI >= 0 ? clean(cells[dateI]?.textContent) : '';
+        const orderDate = orderDateI >= 0 ? clean(cells[orderDateI]?.textContent) : '';
+        const displayDate = placed || confirmed || date || orderDate;
+        const timestamp = Math.max(
+          parseDate(placed), parseDate(confirmed), parseDate(date), parseDate(orderDate)
+        );
+
+        candidates.push({ po, orderDate: displayDate, timestamp });
       }
-      rows.sort((a, b) => b.timestamp - a.timestamp);
-      if (rows[0]) return rows[0];
     }
-    return null;
+
+    const unique = new Map();
+    for (const item of candidates) {
+      const current = unique.get(item.po);
+      if (!current || item.timestamp > current.timestamp) unique.set(item.po, item);
+    }
+
+    return [...unique.values()].sort((a, b) => b.timestamp - a.timestamp);
   }
 
-  async function waitForNewestPO(timeoutMs = 12000) {
+  function newestPO() {
+    return collectPOCandidates()[0] || null;
+  }
+
+  async function quickNewestPO(timeoutMs = 1500) {
     const deadline = Date.now() + timeoutMs;
     let po = newestPO();
     while (!po && Date.now() < deadline) {
-      await sleep(250);
+      await sleep(100);
       po = newestPO();
     }
     return po;
@@ -123,7 +161,7 @@
           'X-Requested-With': 'XMLHttpRequest'
         },
         data: `s=${encodeURIComponent(po)}`,
-        timeout: 15000,
+        timeout: 5000,
         onload: response => {
           if (response.status < 200 || response.status >= 300) return resolve('');
           const doc = new DOMParser().parseFromString(response.responseText, 'text/html');
@@ -160,7 +198,7 @@
     const fnsku = /^X0[A-Z0-9]+$/i.test(rawFnsku) ? rawFnsku : '';
     const title = findLabelValue(['Title']);
     const sortableText = norm(findLabelValue(['Sortable']));
-    const po = await waitForNewestPO();
+    const po = await quickNewestPO();
 
     if (!asin) throw new Error('ASIN not found');
     if (!title) throw new Error('Title not found');
@@ -200,8 +238,7 @@
       badge.setAttribute('aria-busy', 'true');
 
       try {
-        const payload = await buildPayload();
-        GM_setValue(STORAGE_KEY, payload);
+        GM_setValue(STORAGE_KEY, await buildPayload());
         GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
       } catch (error) {
         alert(`RIVER Ticket Assistant failed: ${error.message}`);
@@ -215,5 +252,9 @@
     document.addEventListener('keydown', handler, true);
   }
 
-  if (/fcresearch|qifcr/i.test(location.hostname)) installFCResearchClick();
+  if (location.hostname === 'river.amazon.com') {
+    removeLegacyPanel();
+  } else if (/fcresearch|qifcr/i.test(location.hostname)) {
+    installFCResearchClick();
+  }
 })();
