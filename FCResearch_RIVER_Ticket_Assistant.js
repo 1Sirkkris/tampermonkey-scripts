@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.16
+// @name         FCResearch → RIVER Ticket Assistant v0.2.17
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.16
+// @version      0.2.17
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @description  Launches RIVER from the PanDash L0 badge and pulls newest PO/vendor directly from FCResearch.
@@ -97,14 +97,14 @@
     return null;
   }
 
-  async function waitForNewestPO(timeout = 10000) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const po = newestPO();
-      if (po) return po;
+  async function waitForNewestPO(timeoutMs = 12000) {
+    const deadline = Date.now() + timeoutMs;
+    let po = newestPO();
+    while (!po && Date.now() < deadline) {
       await sleep(250);
+      po = newestPO();
     }
-    return null;
+    return po;
   }
 
   function validVendor(value) {
@@ -160,11 +160,11 @@
     const fnsku = /^X0[A-Z0-9]+$/i.test(rawFnsku) ? rawFnsku : '';
     const title = findLabelValue(['Title']);
     const sortableText = norm(findLabelValue(['Sortable']));
+    const po = await waitForNewestPO();
 
     if (!asin) throw new Error('ASIN not found');
     if (!title) throw new Error('Title not found');
 
-    const po = await waitForNewestPO();
     const vendorCode = po ? await fetchVendorFromPO(po.po) : '';
 
     return {
@@ -200,7 +200,8 @@
       badge.setAttribute('aria-busy', 'true');
 
       try {
-        GM_setValue(STORAGE_KEY, await buildPayload());
+        const payload = await buildPayload();
+        GM_setValue(STORAGE_KEY, payload);
         GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
       } catch (error) {
         alert(`RIVER Ticket Assistant failed: ${error.message}`);
