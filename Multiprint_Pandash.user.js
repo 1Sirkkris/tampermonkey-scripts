@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         v1.8.37 Multiprint + Pandash
 // @version      1.8.37
-// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/Multiprint_Pandash.user.js
-// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/Multiprint_Pandash.user.js
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Multiprint_Pandash.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Multiprint_Pandash.user.js
 // @description  Hazmat badges (TSX/CSX) on main Inventory grid only (#table-inventory, tr[data-row-id]) and product panel. Adds smart product-panel copy cleanup so script visuals/hidden controls never copy, while literal title highlighting stays untouched. Inventory scan groups rows by ASIN so each ASIN is checked once with PanDash, then painted onto all matching rows. Includes manual "Re-check Hazmat" button and is safe with column sorting (old runs are discarded when table changes). 1.7.6 remains the safe global baseline.
 // @author       @mojordaq, @scdavids
 // @include     /^https?:\/\/.*fcresearch.*\//
