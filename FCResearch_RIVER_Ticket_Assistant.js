@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.19
+// @name         FCResearch → RIVER Ticket Assistant v0.2.20
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.19
+// @version      0.2.20
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
-// @description  Launches RIVER from PanDash L0 and pulls newest PO/vendor directly from FCResearch.
+// @description  Launches RIVER from PanDash L0, pulls newest PO/vendor, and auto-advances completed RIVER steps.
 // @match        *://qi-fcresearch-fe.corp.amazon.com/*
 // @match        *://fcresearch-fe.aka.amazon.com/*
 // @match        *://qi-fcresearch-jp.corp.amazon.com/*
@@ -48,8 +48,7 @@
     const wanted = names.map(norm);
     for (const row of root.querySelectorAll('tr')) {
       const cells = rowCells(row);
-      if (cells.length < 2) continue;
-      if (!wanted.includes(norm(cells[0].textContent))) continue;
+      if (cells.length < 2 || !wanted.includes(norm(cells[0].textContent))) continue;
       return clean(cells[1].querySelector('a')?.textContent || cells[1].textContent);
     }
     return '';
@@ -68,7 +67,6 @@
         candidates.push({ headers, score });
       }
     };
-
     addRows(table);
     const wrapper = table.closest('.dataTables_wrapper, .dataTables_scroll') || table.parentElement;
     if (wrapper && wrapper !== table) addRows(wrapper);
@@ -94,24 +92,20 @@
 
   function newestPO() {
     const candidates = [];
-
     for (const table of document.querySelectorAll('table')) {
       const header = tableHeaders(table);
       if (!header || header.score < 2) continue;
-
       const poIndex = indexOf(header.headers, ['purchase order']);
       if (poIndex < 0) continue;
       const placedIndex = indexOf(header.headers, ['placed']);
       const confirmedIndex = indexOf(header.headers, ['confirmed']);
       const dateIndex = indexOf(header.headers, ['date']);
       const orderDateIndex = indexOf(header.headers, ['order date']);
-
       for (const row of table.querySelectorAll('tbody tr, tr')) {
         const cells = rowCells(row);
         if (!cells[poIndex]) continue;
         const po = validPO(cells[poIndex].textContent);
         if (!po) continue;
-
         const placed = placedIndex >= 0 ? clean(cells[placedIndex]?.textContent) : '';
         const confirmed = confirmedIndex >= 0 ? clean(cells[confirmedIndex]?.textContent) : '';
         const date = dateIndex >= 0 ? clean(cells[dateIndex]?.textContent) : '';
@@ -123,7 +117,6 @@
         });
       }
     }
-
     const unique = new Map();
     for (const item of candidates) {
       const current = unique.get(item.po);
@@ -197,10 +190,8 @@
     const sortableText = norm(findLabelValue(['Sortable']));
     const po = await waitForPO();
     const vendorCode = po ? await fetchVendor(po.po) : '';
-
     if (!asin) throw new Error('ASIN not found');
     if (!title) throw new Error('Title not found');
-
     return {
       asin,
       fnsku,
@@ -227,15 +218,12 @@
         ? event.target.closest('[data-section-type="product"] .fc-hazmat.fc-river-l0')
         : null;
       if (!badge || busy) return;
-
       event.preventDefault();
       event.stopImmediatePropagation();
       busy = true;
       badge.setAttribute('aria-busy', 'true');
-
       try {
-        const payload = await buildPayload();
-        GM_setValue(STORAGE_KEY, payload);
+        GM_setValue(STORAGE_KEY, await buildPayload());
         GM_openInTab(RIVER_URL, { active: true, insert: true, setParent: true });
       } catch (error) {
         alert(`RIVER Ticket Assistant failed: ${error.message}`);
@@ -244,11 +232,36 @@
         badge.removeAttribute('aria-busy');
       }
     };
-
     document.addEventListener('click', handler, true);
     document.addEventListener('keydown', handler, true);
   }
 
-  if (location.hostname === 'river.amazon.com') removeLegacyPanel();
-  else if (/fcresearch|qifcr/i.test(location.hostname)) installClick();
+  function installInformationAutoNext() {
+    let clicked = false;
+    const run = () => {
+      if (clicked) return;
+      const headingFound = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,legend,strong')]
+        .some(el => norm(el.textContent) === 'information w1');
+      if (!headingFound) return;
+      const inputs = [...document.querySelectorAll('input[type="text"], input:not([type])')]
+        .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
+      if (inputs.length < 6 || inputs.slice(0, 6).some(input => !clean(input.value))) return;
+      const next = [...document.querySelectorAll('button, input[type="button"], input[type="submit"], a')]
+        .find(el => norm(el.innerText || el.value || el.textContent) === 'next');
+      if (!next || next.disabled || next.getAttribute('aria-disabled') === 'true' || next.classList.contains('disabled')) return;
+      clicked = true;
+      setTimeout(() => next.click(), 250);
+    };
+    const observer = new MutationObserver(run);
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['value', 'disabled', 'aria-disabled'] });
+    setInterval(run, 250);
+    run();
+  }
+
+  if (location.hostname === 'river.amazon.com') {
+    removeLegacyPanel();
+    installInformationAutoNext();
+  } else if (/fcresearch|qifcr/i.test(location.hostname)) {
+    installClick();
+  }
 })();
