@@ -1,0 +1,1590 @@
+// ==UserScript==
+// @name         FCResearch → RIVER Ticket Assistant v0.2.10
+// @version      0.2.10
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.user.js
+// @description  Captures FCResearch data and auto-advances fixed Hazmat RIVER steps while preserving manual checkpoints.
+// @match        *://qi-fcresearch-fe.corp.amazon.com/*
+// @match        *://fcresearch-fe.aka.amazon.com/*
+// @match        *://qi-fcresearch-jp.corp.amazon.com/*
+// @match        *://qifcr.fe.aftx.amazonoperations.app/*
+// @match        https://river.amazon.com/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_openInTab
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    const VERSION = '0.2.10';
+    const STORAGE_KEY = 'bwu2_ticket_assistant_payload_v3';
+    const RIVER_URL =
+        'https://river.amazon.com/BWU2/workflows?buildingType=fc&q0=3654ec14-7232-4f65-84c3-87927cdb4d0c&q1=0dbb253e-c43a-4a8b-a316-e32b8ab9be21&id=0dbb253e-c43a-4a8b-a316-e32b8ab9be21';
+
+    const isRiver = location.hostname === 'river.amazon.com';
+    const isFCResearch = /fcresearch|qifcr/i.test(location.hostname);
+
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    function clean(value) {
+        return String(value ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function normalise(value) {
+        return clean(value)
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+    }
+
+    function isX0Identifier(value) {
+        return /^X0[A-Z0-9]+$/i.test(clean(value));
+    }
+
+    function payloadIdentifier(payload) {
+        const fnsku = clean(payload?.fnsku);
+        if (isX0Identifier(fnsku)) return fnsku;
+        return clean(payload?.asin) || fnsku || '';
+    }
+
+    function isVisible(element) {
+        if (!element || !element.isConnected) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || 1) !== 0
+            && rect.width > 0
+            && rect.height > 0;
+    }
+
+    function flash(element) {
+        if (!element) return;
+        const oldTransition = element.style.transition;
+        const oldBoxShadow = element.style.boxShadow;
+        element.style.transition = 'box-shadow 150ms ease';
+        let count = 0;
+
+        const pulse = () => {
+            element.style.boxShadow = count % 2
+                ? oldBoxShadow
+                : '0 0 0 3px rgba(46, 160, 67, 0.70)';
+            count += 1;
+
+            if (count < 6) {
+                setTimeout(pulse, 140);
+            } else {
+                element.style.boxShadow = oldBoxShadow;
+                element.style.transition = oldTransition;
+            }
+        };
+
+        pulse();
+    }
+
+    function makePanel(side = 'right') {
+        document.querySelector('#bwu2-ticket-assistant')?.remove();
+
+        const panel = document.createElement('div');
+        panel.id = 'bwu2-ticket-assistant';
+        panel.innerHTML = `
+            <div class="ta-head">
+                <strong>Ticket Assistant v${VERSION}</strong>
+                <span class="ta-item"></span>
+            </div>
+            <div class="ta-actions"></div>
+            <div class="ta-status">Waiting…</div>
+        `;
+
+        Object.assign(panel.style, {
+            position: 'fixed',
+            zIndex: '2147483647',
+            bottom: '16px',
+            [side]: '16px',
+            minWidth: '260px',
+            maxWidth: '380px',
+            padding: '10px',
+            border: '1px solid #9aa0a6',
+            borderRadius: '8px',
+            background: 'rgba(255,255,255,0.97)',
+            boxShadow: '0 2px 10px rgba(0,0,0,.18)',
+            font: '12px Arial, sans-serif',
+            color: '#111'
+        });
+
+        const style = document.createElement('style');
+        style.textContent = `
+            #bwu2-ticket-assistant .ta-head {
+                display:flex;
+                align-items:center;
+                justify-content:space-between;
+                gap:12px;
+                margin-bottom:8px;
+            }
+            #bwu2-ticket-assistant .ta-head span {
+                max-width:170px;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                white-space:nowrap;
+                opacity:.72;
+                font-size:10px;
+                font-weight:700;
+            }
+            #bwu2-ticket-assistant .ta-actions {
+                display:flex;
+                gap:6px;
+            }
+            #bwu2-ticket-assistant button {
+                flex:1;
+                min-height:30px;
+                padding:5px 9px;
+                border:1px solid #777;
+                border-radius:5px;
+                background:#f3f3f3;
+                color:#111;
+                font-weight:700;
+                cursor:pointer;
+            }
+            #bwu2-ticket-assistant button:hover { background:#e7e7e7; }
+            #bwu2-ticket-assistant .ta-primary {
+                background:#ffad22;
+                border-color:#d88400;
+            }
+            #bwu2-ticket-assistant .ta-primary:hover { background:#ff9d00; }
+            #bwu2-ticket-assistant .ta-status {
+                margin-top:7px;
+                min-height:14px;
+                line-height:1.25;
+                opacity:.80;
+                word-break:break-word;
+            }
+        `;
+
+        document.head.appendChild(style);
+        document.body.appendChild(panel);
+
+        return {
+            panel,
+            actions: panel.querySelector('.ta-actions'),
+            status: panel.querySelector('.ta-status'),
+            item: panel.querySelector('.ta-item'),
+            setStatus(message) {
+                this.status.textContent = message;
+            },
+            setItem(value) {
+                const item = clean(value);
+                this.item.textContent = item;
+                this.item.title = item;
+            }
+        };
+    }
+
+    function button(text, onClick, primary = false) {
+        const element = document.createElement('button');
+        element.type = 'button';
+        element.textContent = text;
+        if (primary) element.classList.add('ta-primary');
+        element.addEventListener('click', onClick);
+        return element;
+    }
+
+    // ---------------------------------------------------------------------
+    // FCResearch capture
+    // ---------------------------------------------------------------------
+
+    function findLabelValue(labelNames) {
+        const wanted = labelNames.map(normalise);
+
+        for (const row of document.querySelectorAll('tr')) {
+            const cells = [...row.querySelectorAll(':scope > th, :scope > td')];
+            if (cells.length < 2) continue;
+
+            const label = normalise(cells[0].innerText || cells[0].textContent);
+            if (!wanted.includes(label)) continue;
+
+            const link = cells[1].querySelector('a');
+            return clean(link?.innerText || cells[1].innerText || cells[1].textContent);
+        }
+
+        return '';
+    }
+
+    function directCells(row) {
+        return [...row.children].filter(cell =>
+            cell.matches && cell.matches('th, td')
+        );
+    }
+
+    function getHeaderMap(table) {
+        const knownHeaders = [
+            'purchase order', 'inventory owner', 'fc', 'condition', 'sku',
+            'vendor code', 'unfilled', 'canceled', 'received', 'overaged',
+            'receiver', 'process path', 'shipment', 'title', 'discount',
+            'order date', 'placed', 'confirmed', 'date',
+            'container', 'asin', 'fnsku', 'fcsku', 'lpn', 'quantity',
+            'disposition', 'consumer', 'outer location'
+        ];
+
+        const scanRoot = root => {
+            let bestCells = [];
+            let bestScore = -1;
+
+            if (!root) return { bestCells, bestScore };
+
+            for (const row of root.querySelectorAll('tr')) {
+                const cells = directCells(row);
+                if (!cells.length) continue;
+
+                const names = cells.map(cell =>
+                    normalise(cell.innerText || cell.textContent)
+                );
+
+                const score = names.reduce((total, name) => {
+                    return total + (
+                        knownHeaders.some(header =>
+                            name === header || name.startsWith(`${header} `)
+                        ) ? 1 : 0
+                    );
+                }, 0);
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestCells = cells;
+                }
+            }
+
+            return { bestCells, bestScore };
+        };
+
+        let result = scanRoot(table);
+
+        if (result.bestScore <= 0) {
+            const explicitWrapper =
+                table.closest('.dataTables_wrapper')
+                || (table.id
+                    ? document.querySelector(`#${CSS.escape(table.id)}_wrapper`)
+                    : null);
+
+            const wrapperResult = scanRoot(explicitWrapper);
+            if (wrapperResult.bestScore > result.bestScore) result = wrapperResult;
+        }
+
+        const map = new Map();
+        result.bestCells.forEach((header, index) => {
+            const name = normalise(header.innerText || header.textContent);
+            if (name) map.set(name, index);
+        });
+
+        return map;
+    }
+
+    function headerIndex(map, possibleNames) {
+        const targets = possibleNames.map(normalise);
+
+        for (const [name, index] of map.entries()) {
+            if (targets.includes(name)) return index;
+        }
+
+        for (const [name, index] of map.entries()) {
+            if (targets.some(target => name.startsWith(`${target} `))) return index;
+        }
+
+        return -1;
+    }
+
+    function parseFCDate(value) {
+        const text = clean(value);
+        const match = text.match(
+            /(\d{4})-(\d{2})-(\d{2})(?:\s+|T)(\d{2}):(\d{2}):(\d{2})/
+        );
+
+        if (!match) return Number.NEGATIVE_INFINITY;
+
+        const [, year, month, day, hour, minute, second] = match;
+        return Date.UTC(
+            Number(year),
+            Number(month) - 1,
+            Number(day),
+            Number(hour),
+            Number(minute),
+            Number(second)
+        );
+    }
+
+    function exactElementText(element) {
+        if (!element) return '';
+        return normalise(element.innerText || element.textContent);
+    }
+
+    function sectionRoots(titleAliases, preferredSelectors = []) {
+        const roots = [];
+        const add = element => {
+            if (!element || roots.includes(element)) return;
+            roots.push(element);
+        };
+
+        for (const selector of preferredSelectors) {
+            for (const table of document.querySelectorAll(selector)) {
+                add(table);
+                add(table.closest('.dataTables_wrapper'));
+
+                let parent = table.parentElement;
+                for (let depth = 0; parent && depth < 6; depth += 1) {
+                    if (parent.querySelectorAll('tr').length > 1) add(parent);
+                    parent = parent.parentElement;
+                }
+            }
+        }
+
+        const wanted = titleAliases.map(normalise);
+        const headings = document.querySelectorAll(
+            'h1, h2, h3, h4, h5, h6, legend, strong, b, [class*="title"], [class*="header"]'
+        );
+
+        for (const heading of headings) {
+            if (!wanted.includes(exactElementText(heading))) continue;
+
+            let parent = heading.parentElement;
+            for (let depth = 0; parent && depth < 8; depth += 1) {
+                if (parent.querySelectorAll('tr').length > 1) add(parent);
+                parent = parent.parentElement;
+            }
+        }
+
+        return roots;
+    }
+
+    function parseGrid(root, requiredHeaders) {
+        if (!root) return null;
+
+        const required = requiredHeaders.map(normalise);
+        const rows = [...root.querySelectorAll('tr')];
+        let headerRow = null;
+        let headerCells = [];
+        let headerScore = -1;
+
+        for (const row of rows) {
+            const cells = directCells(row);
+            if (!cells.length) continue;
+
+            const names = cells.map(cell => exactElementText(cell));
+            const score = required.reduce((total, target) => {
+                return total + (names.some(name =>
+                    name === target || name.startsWith(`${target} `)
+                ) ? 1 : 0);
+            }, 0);
+
+            if (score > headerScore) {
+                headerScore = score;
+                headerRow = row;
+                headerCells = cells;
+            }
+        }
+
+        if (!headerRow || headerScore < required.length) return null;
+
+        // A section root can contain several FCResearch tables. Once the matching
+        // header is found, only read rows from that exact table. This prevents
+        // headers such as “Container / ASIN / FNSku” being treated as PO data.
+        const matchedTable = headerRow.closest('table');
+        const scopedRows = matchedTable
+            ? [...matchedTable.querySelectorAll('tr')]
+            : rows;
+
+        const map = new Map();
+        headerCells.forEach((cell, index) => {
+            const name = exactElementText(cell);
+            if (name) map.set(name, index);
+        });
+
+        const highestIndex = Math.max(...map.values());
+        const dataRows = scopedRows.filter(row => {
+            if (row === headerRow) return false;
+            const cells = directCells(row);
+            if (cells.length <= highestIndex) return false;
+
+            const rowText = exactElementText(row);
+            if (!rowText || rowText.includes('no matching records found')) return false;
+
+            // Ignore duplicate/floating header rows used by DataTables.
+            const cellNames = cells.map(cell => exactElementText(cell));
+            const repeatedHeaderMatches = required.filter(target =>
+                cellNames.some(name => name === target || name.startsWith(`${target} `))
+            ).length;
+            if (repeatedHeaderMatches >= required.length) return false;
+
+            const first = exactElementText(cells[0]);
+            return first && first !== 'purchase order' && first !== 'date';
+        });
+
+        return {
+            root: matchedTable || root,
+            map,
+            rows: dataRows,
+            score: headerScore * 100 + Math.min(dataRows.length, 20) * 10
+                - Math.log2(scopedRows.length + 1)
+        };
+    }
+
+    function findGrid({ titleAliases, preferredSelectors, requiredHeaders }) {
+        const roots = sectionRoots(titleAliases, preferredSelectors);
+        const parsed = roots
+            .map(root => parseGrid(root, requiredHeaders))
+            .filter(Boolean)
+            .sort((a, b) => b.score - a.score);
+
+        return parsed[0] || null;
+    }
+
+    function looksLikePurchaseOrder(value) {
+        const text = clean(value);
+        // FC POs are compact alphanumeric IDs containing both letters and digits.
+        // Requiring both rejects table headers such as “Container”.
+        return /^(?=.*[a-z])(?=.*\d)[a-z0-9]{6,20}$/i.test(text);
+    }
+
+    function cleanVendorCode(value) {
+        const text = clean(value);
+        const normalised = normalise(text);
+        const invalidHeaders = new Set([
+            'vendor code', 'fnsku', 'fn sku', 'sku', 'asin', 'container',
+            'purchase order', 'inventory owner', 'fcsku', 'quantity'
+        ]);
+        return text && !invalidHeaders.has(normalised) ? text : 'n/a';
+    }
+
+    function readPurchaseOrderItems() {
+        const grid = findGrid({
+            titleAliases: ['Purchase Order Items'],
+            preferredSelectors: [
+                '#table-purchase-order-item',
+                'table[id*="purchase-order-item"]',
+                'table[id*="purchase_order_item"]'
+            ],
+            requiredHeaders: ['Purchase Order', 'Sku', 'Vendor Code']
+        });
+
+        if (!grid) return [];
+
+        const poIndex = headerIndex(grid.map, ['Purchase Order']);
+        const vendorIndex = headerIndex(grid.map, ['Vendor Code']);
+        if (poIndex < 0 || vendorIndex < 0) return [];
+
+        const results = [];
+        for (const [rowOrder, row] of grid.rows.entries()) {
+            const cells = directCells(row);
+            const po = clean(cells[poIndex]?.innerText || cells[poIndex]?.textContent);
+            if (!looksLikePurchaseOrder(po)) continue;
+
+            results.push({
+                po,
+                vendorCode: cleanVendorCode(
+                    cells[vendorIndex]?.innerText || cells[vendorIndex]?.textContent
+                ),
+                rowOrder
+            });
+        }
+
+        return results;
+    }
+
+    function sellerIdFromOwner(value) {
+        const owner = clean(value);
+        if (!owner) return 'n/a';
+        return owner.replace(/_FBA$/i, '') || 'n/a';
+    }
+
+    function readPurchaseOrderDetails() {
+        const grid = findGrid({
+            titleAliases: ['Purchase Order'],
+            preferredSelectors: [
+                '#table-purchase-order',
+                'table[id="purchase-order"]',
+                'table[id*="purchase-order"]:not([id*="item"])',
+                'table[id*="purchase_order"]:not([id*="item"])'
+            ],
+            requiredHeaders: ['Purchase Order', 'Inventory Owner', 'Placed']
+        });
+
+        if (!grid) return new Map();
+
+        const poIndex = headerIndex(grid.map, ['Purchase Order']);
+        const ownerIndex = headerIndex(grid.map, ['Inventory Owner']);
+        const dateIndex = headerIndex(grid.map, ['Placed', 'Confirmed']);
+        if (poIndex < 0) return new Map();
+
+        const details = new Map();
+        for (const [rowOrder, row] of grid.rows.entries()) {
+            const cells = directCells(row);
+            const po = clean(cells[poIndex]?.innerText || cells[poIndex]?.textContent);
+            if (!looksLikePurchaseOrder(po)) continue;
+
+            const inventoryOwner = ownerIndex >= 0
+                ? clean(cells[ownerIndex]?.innerText || cells[ownerIndex]?.textContent)
+                : '';
+            const orderDate = dateIndex >= 0
+                ? clean(cells[dateIndex]?.innerText || cells[dateIndex]?.textContent)
+                : '';
+            const timestamp = parseFCDate(orderDate);
+            const previous = details.get(po);
+
+            if (!previous || timestamp > previous.timestamp) {
+                details.set(po, {
+                    po,
+                    inventoryOwner,
+                    sellerId: sellerIdFromOwner(inventoryOwner),
+                    orderDate,
+                    timestamp,
+                    rowOrder
+                });
+            }
+        }
+
+        return details;
+    }
+
+    function readReceiveHistoryDates() {
+        const grid = findGrid({
+            titleAliases: ['Receive History'],
+            preferredSelectors: [
+                '#table-receive-history',
+                'table[id*="receive-history"]',
+                'table[id*="receive_history"]'
+            ],
+            requiredHeaders: ['Date', 'Receiver', 'Purchase Order']
+        });
+
+        if (!grid) return new Map();
+
+        const dateIndex = headerIndex(grid.map, ['Date']);
+        const poIndex = headerIndex(grid.map, ['Purchase Order']);
+        if (dateIndex < 0 || poIndex < 0) return new Map();
+
+        const dates = new Map();
+        for (const row of grid.rows) {
+            const cells = directCells(row);
+            const po = clean(cells[poIndex]?.innerText || cells[poIndex]?.textContent);
+            if (!looksLikePurchaseOrder(po)) continue;
+
+            const date = clean(cells[dateIndex]?.innerText || cells[dateIndex]?.textContent);
+            const timestamp = parseFCDate(date);
+            if (timestamp > (dates.get(po) ?? Number.NEGATIVE_INFINITY)) {
+                dates.set(po, timestamp);
+            }
+        }
+
+        return dates;
+    }
+
+    function newestPurchaseOrder() {
+        const items = readPurchaseOrderItems();
+        const details = readPurchaseOrderDetails();
+        const receiveDates = readReceiveHistoryDates();
+
+        // Prefer the PO Items table because it contains the actual Vendor Code.
+        // Rank those rows using latest Receive History, then the PO Placed date.
+        if (items.length) {
+            const candidates = items.map(item => {
+                const detail = details.get(item.po);
+                const receiveTimestamp = receiveDates.get(item.po)
+                    ?? Number.NEGATIVE_INFINITY;
+                const placedTimestamp = detail?.timestamp
+                    ?? Number.NEGATIVE_INFINITY;
+
+                return {
+                    po: item.po,
+                    vendorCode: item.vendorCode !== 'n/a'
+                        ? item.vendorCode
+                        : (detail?.sellerId || 'n/a'),
+                    inventoryOwner: detail?.inventoryOwner || '',
+                    orderDate: detail?.orderDate || '',
+                    timestamp: Math.max(receiveTimestamp, placedTimestamp),
+                    rowOrder: item.rowOrder
+                };
+            });
+
+            candidates.sort((a, b) => {
+                if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
+                return a.rowOrder - b.rowOrder;
+            });
+            return candidates[0];
+        }
+
+        // Fallback: current Purchase Order table only, using Seller ID.
+        const candidates = [...details.values()].map(detail => ({
+            po: detail.po,
+            vendorCode: detail.sellerId,
+            inventoryOwner: detail.inventoryOwner,
+            orderDate: detail.orderDate,
+            timestamp: detail.timestamp,
+            rowOrder: detail.rowOrder
+        }));
+
+        candidates.sort((a, b) => {
+            if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
+            return a.rowOrder - b.rowOrder;
+        });
+
+        if (candidates.length) return candidates[0];
+
+        return {
+            po: 'n/a - no PO available',
+            vendorCode: 'n/a',
+            inventoryOwner: '',
+            orderDate: '',
+            timestamp: Number.NEGATIVE_INFINITY
+        };
+    }
+
+    function findInventoryTable() {
+        const direct = document.querySelector('#table-inventory');
+        if (direct) return direct;
+
+        return [...document.querySelectorAll('table')].find(table => {
+            const map = getHeaderMap(table);
+            return headerIndex(map, ['Container']) >= 0
+                && headerIndex(map, ['ASIN']) >= 0
+                && headerIndex(map, ['FNSku', 'FNSKU']) >= 0
+                && headerIndex(map, ['Quantity']) >= 0
+                && headerIndex(map, ['Disposition']) >= 0;
+        }) || null;
+    }
+
+    function inventoryQuantity() {
+        const table = findInventoryTable();
+        if (!table) return 0;
+
+        const wrapper = table.closest('.dataTables_wrapper') || table.parentElement;
+        const headers = [
+            ...table.querySelectorAll('th'),
+            ...(wrapper ? wrapper.querySelectorAll('th') : [])
+        ];
+
+        for (const header of headers) {
+            const text = clean(header.innerText || header.textContent);
+            const match = text.match(/^quantity\s*\(([\d,]+)\)/i);
+            if (match) return Number(match[1].replace(/,/g, '')) || 0;
+        }
+
+        const map = getHeaderMap(table);
+        const quantityIndex = headerIndex(map, ['Quantity']);
+        if (quantityIndex < 0) return 0;
+
+        let total = 0;
+        for (const row of table.querySelectorAll('tbody tr')) {
+            const cells = directCells(row);
+            const value = clean(cells[quantityIndex]?.innerText || cells[quantityIndex]?.textContent);
+            const number = Number(value.replace(/,/g, ''));
+            if (Number.isFinite(number)) total += number;
+        }
+        return total;
+    }
+
+    function formatCost(value) {
+        const text = clean(value);
+        if (!text) return 'n/a';
+        if (/^aud\b/i.test(text)) return text;
+
+        const number = text.match(/\d+(?:,\d{3})*(?:\.\d+)?/);
+        return number ? `AUD ${number[0].replace(/,/g, '')}` : text;
+    }
+
+    function parseBoolean(value) {
+        const text = normalise(value);
+        if (['true', 'yes', 'y', '1'].includes(text)) return true;
+        if (['false', 'no', 'n', '0'].includes(text)) return false;
+        return null;
+    }
+
+    function captureFCResearch() {
+        const asin = findLabelValue(['ASIN']);
+        const foundFnsku = findLabelValue(['FNSku', 'FNSKU']);
+        const fnsku = isX0Identifier(foundFnsku) ? foundFnsku : '';
+        const title = findLabelValue(['Title']);
+        const cost = formatCost(findLabelValue(['List Price']));
+        const sortable = parseBoolean(findLabelValue(['Sortable']));
+        const totalInventory = inventoryQuantity();
+        const newest = newestPurchaseOrder();
+
+        if (!asin) throw new Error('ASIN not found.');
+        if (!title) throw new Error('Title not found.');
+        if (sortable === null) throw new Error('Sortable status not found.');
+
+        return {
+            asin,
+            fnsku,
+            processingId: fnsku || asin,
+            title,
+            purchaseOrder: newest.po,
+            vendorCode: newest.vendorCode || 'n/a',
+            inventoryCost: cost,
+            physicalLocation: 'N/A',
+            orderDate: newest.orderDate,
+            sortable,
+            inventoryQuantity: totalInventory,
+            shipmentsImpacted: 0,
+            sourceUrl: location.href,
+            capturedAt: Date.now()
+        };
+    }
+
+    function savePayload(payload) {
+        GM_setValue(STORAGE_KEY, payload);
+    }
+
+    async function captureFCResearchWhenReady(timeoutMs = 6000) {
+        const deadline = Date.now() + timeoutMs;
+        let lastError = null;
+
+        while (Date.now() < deadline) {
+            try {
+                return captureFCResearch();
+            } catch (error) {
+                lastError = error;
+                await sleep(250);
+            }
+        }
+
+        throw lastError || new Error('FCResearch data was not ready.');
+    }
+
+    function startFCResearch() {
+        // v0.2.10: invisible DOM bridge. A shared page element is more reliable
+        // than cross-userscript CustomEvents in Firefox/Tampermonkey.
+        let launchInProgress = false;
+
+        document.querySelector('#bwu2-river-launch-bridge')?.remove();
+        const bridge = document.createElement('button');
+        bridge.type = 'button';
+        bridge.id = 'bwu2-river-launch-bridge';
+        bridge.hidden = true;
+        bridge.setAttribute('aria-hidden', 'true');
+        document.documentElement.appendChild(bridge);
+
+        bridge.addEventListener('click', async () => {
+            if (launchInProgress) return;
+            launchInProgress = true;
+            bridge.dataset.busy = '1';
+
+            try {
+                const payload = await captureFCResearchWhenReady();
+                savePayload(payload);
+
+                GM_openInTab(RIVER_URL, {
+                    active: true,
+                    insert: true,
+                    setParent: true
+                });
+            } catch (error) {
+                console.error('[Ticket Assistant] L0 launch failed:', error);
+                alert(`RIVER Ticket Assistant failed: ${error.message}`);
+            } finally {
+                launchInProgress = false;
+                delete bridge.dataset.busy;
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------------
+    // RIVER workflow preparation
+    // ---------------------------------------------------------------------
+
+    function readPayload() {
+        const payload = GM_getValue(STORAGE_KEY, null);
+        return payload && typeof payload === 'object' ? payload : null;
+    }
+
+    function elementText(element) {
+        if (!element) return '';
+        return clean(
+            element.getAttribute?.('aria-label')
+            || element.getAttribute?.('title')
+            || element.innerText
+            || element.textContent
+        );
+    }
+
+    function inputCandidates() {
+        return [...document.querySelectorAll(
+            'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="radio"]):not([type="checkbox"]), textarea'
+        )].filter(isVisible);
+    }
+
+    function inputTexts(input) {
+        const results = [];
+        const add = (value, priority) => {
+            const text = clean(value);
+            if (text) results.push({ text, priority });
+        };
+
+        add(input.getAttribute('placeholder'), 150);
+        add(input.getAttribute('aria-label'), 145);
+        add(input.getAttribute('name'), 125);
+        add(input.id, 120);
+
+        for (const label of input.labels || []) add(elementText(label), 170);
+
+        if (input.id) {
+            const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+            add(elementText(label), 175);
+        }
+
+        add(elementText(input.closest('label')), 165);
+
+        let parent = input.parentElement;
+        for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+            const text = elementText(parent);
+            if (text && text.length <= 350) add(text, 95 - depth * 15);
+        }
+
+        return results;
+    }
+
+    function textMatchScore(candidateText, alias) {
+        const candidate = normalise(candidateText);
+        const target = normalise(alias);
+        if (!candidate || !target) return -1;
+        if (candidate === target) return 500;
+        if (candidate.startsWith(`${target} `)) return 420;
+        if (candidate.includes(target)) return 350;
+        if (target.includes(candidate) && candidate.length >= 4) return 220;
+        return -1;
+    }
+
+    function findInputField({ names = [], aliases = [] }) {
+        for (const name of names) {
+            const direct = document.querySelector(
+                `input[name="${CSS.escape(name)}"], textarea[name="${CSS.escape(name)}"]`
+            );
+            if (direct && isVisible(direct)) return direct;
+        }
+
+        let best = null;
+        for (const input of inputCandidates()) {
+            for (const candidate of inputTexts(input)) {
+                for (const alias of aliases) {
+                    const match = textMatchScore(candidate.text, alias);
+                    if (match < 0) continue;
+                    const score = candidate.priority + match - candidate.text.length / 30;
+                    if (!best || score > best.score) best = { input, score };
+                }
+            }
+        }
+
+        return best?.input || null;
+    }
+
+    function nativePropertySetter(element, propertyName) {
+        let prototype = element;
+
+        while (prototype) {
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, propertyName);
+            if (descriptor?.set) return descriptor.set;
+            prototype = Object.getPrototypeOf(prototype);
+        }
+
+        return null;
+    }
+
+    function nativeValueSetter(input) {
+        return nativePropertySetter(input, 'value');
+    }
+
+    function dispatchValueEvents(input, value) {
+        try {
+            input.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                inputType: 'insertText',
+                data: String(value)
+            }));
+        } catch (_) {
+            // Firefox/older page fallback continues below.
+        }
+
+        try {
+            input.dispatchEvent(new InputEvent('input', {
+                bubbles: true,
+                inputType: 'insertText',
+                data: String(value)
+            }));
+        } catch (_) {
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', {
+            bubbles: true,
+            key: 'Unidentified'
+        }));
+    }
+
+    async function setInputValueReliably(input, value, attempts = 5) {
+        if (!input) return false;
+
+        const maxLength = Number(input.getAttribute('maxlength')) || 0;
+        const finalValue = maxLength > 0
+            ? String(value ?? '').slice(0, maxLength)
+            : String(value ?? '');
+        const setter = nativeValueSetter(input);
+
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            input.focus({ preventScroll: true });
+
+            if (typeof input.select === 'function') input.select();
+            if (setter) setter.call(input, '');
+            else input.value = '';
+            dispatchValueEvents(input, '');
+
+            if (setter) setter.call(input, finalValue);
+            else input.value = finalValue;
+            dispatchValueEvents(input, finalValue);
+
+            await sleep(100 + attempt * 40);
+
+            if (String(input.value ?? '') === finalValue) {
+                input.dispatchEvent(new Event('blur', { bubbles: true }));
+                input.blur();
+                flash(input);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function localChoiceTexts(control) {
+        const results = [];
+        const add = (element, priority) => {
+            if (!element) return;
+            const text = elementText(element);
+            if (text && text.length <= 700) results.push({ element, text, priority });
+        };
+
+        add(control, 130);
+        add(control.closest('label'), 220);
+
+        if (control.id) {
+            add(document.querySelector(`label[for="${CSS.escape(control.id)}"]`), 230);
+        }
+
+        for (const label of control.labels || []) add(label, 235);
+
+        add(control.nextElementSibling, 205);
+        add(control.previousElementSibling, 195);
+
+        let parent = control.parentElement;
+        for (let depth = 0; parent && depth < 4; depth += 1, parent = parent.parentElement) {
+            add(parent, 165 - depth * 25);
+        }
+
+        return results;
+    }
+
+    function choiceIsUsable(control, texts) {
+        if (!control || control.disabled || control.getAttribute('aria-disabled') === 'true') return false;
+        if (isVisible(control)) return true;
+        return texts.some(candidate => isVisible(candidate.element));
+    }
+
+    function findChoiceControl(targetTexts) {
+        const aliases = (Array.isArray(targetTexts) ? targetTexts : [targetTexts])
+            .map(normalise)
+            .filter(Boolean);
+        let best = null;
+
+        const controls = document.querySelectorAll(
+            'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]'
+        );
+
+        for (const control of controls) {
+            const texts = localChoiceTexts(control);
+            if (!choiceIsUsable(control, texts)) continue;
+
+            for (const candidate of texts) {
+                for (const alias of aliases) {
+                    const match = textMatchScore(candidate.text, alias);
+                    if (match < 0) continue;
+                    const score = candidate.priority + match - candidate.text.length / 25;
+                    if (!best || score > best.score) {
+                        best = {
+                            control,
+                            clickTarget: isVisible(candidate.element) ? candidate.element : control,
+                            score,
+                            matchedText: candidate.text
+                        };
+                    }
+                }
+            }
+        }
+
+        return best;
+    }
+
+    function isChoiceSelected(control) {
+        if (!control) return false;
+        if (control instanceof HTMLInputElement) return control.checked;
+        if (control.getAttribute('aria-checked') === 'true') return true;
+        const selectedRoot = control.closest(
+            '[aria-checked="true"], .selected, .checked, .active, [data-selected="true"]'
+        );
+        return Boolean(selectedRoot);
+    }
+
+    function forceNativeChoice(control) {
+        if (!(control instanceof HTMLInputElement)) return;
+        const descriptor = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            'checked'
+        );
+        if (descriptor?.set) descriptor.set.call(control, true);
+        else control.checked = true;
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function selectChoiceByText(targetTexts) {
+        const match = findChoiceControl(targetTexts);
+        if (!match) return false;
+
+        const control = match.control;
+        const linkedLabel = control instanceof HTMLInputElement && control.id
+            ? document.querySelector(`label[for="${CSS.escape(control.id)}"]`)
+            : null;
+        const clickTargets = [...new Set([
+            linkedLabel,
+            ...(control.labels || []),
+            match.clickTarget,
+            control
+        ].filter(Boolean))];
+
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (isChoiceSelected(control)) {
+                flash(isVisible(match.clickTarget) ? match.clickTarget : control);
+                return true;
+            }
+
+            // Firefox rejected the old synthetic MouseEvent because Tampermonkey's
+            // sandboxed window was not accepted as UIEventInit.view. Native click()
+            // is enough for these Angular radio controls and triggers their ng-model.
+            for (const target of clickTargets) {
+                if (typeof target.click !== 'function') continue;
+                target.click();
+                await sleep(120);
+                if (isChoiceSelected(control)) break;
+            }
+
+            if (!isChoiceSelected(control)) {
+                forceNativeChoice(control);
+                await sleep(120);
+            }
+
+            if (isChoiceSelected(control)) {
+                flash(isVisible(match.clickTarget) ? match.clickTarget : control);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function selectMatchesOption(select, option, targetText) {
+        const selected = select.options[select.selectedIndex];
+        return select.value === option.value
+            || selected === option
+            || normalise(selected?.textContent) === targetText;
+    }
+
+    async function selectVisibleOption(optionText, attempts = 6) {
+        const target = normalise(optionText);
+
+        for (const select of document.querySelectorAll('select')) {
+            if (!isVisible(select)) continue;
+
+            const option = [...select.options].find(item =>
+                normalise(item.textContent) === target
+                || normalise(item.value) === target
+            );
+            if (!option) continue;
+
+            const setter = nativePropertySetter(select, 'value');
+
+            for (let attempt = 0; attempt < attempts; attempt += 1) {
+                select.focus({ preventScroll: true });
+
+                option.selected = true;
+                select.selectedIndex = option.index;
+
+                if (setter) setter.call(select, option.value);
+                else select.value = option.value;
+
+                select.dispatchEvent(new Event('input', { bubbles: true }));
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+                select.dispatchEvent(new KeyboardEvent('keyup', {
+                    bubbles: true,
+                    key: 'Enter',
+                    code: 'Enter'
+                }));
+
+                await sleep(180 + attempt * 80);
+
+                if (selectMatchesOption(select, option, target)) {
+                    // Angular occasionally redraws this dropdown immediately after
+                    // change. Confirm it still retained the value before advancing.
+                    await sleep(220);
+                    if (selectMatchesOption(select, option, target)) {
+                        select.dispatchEvent(new Event('blur', { bubbles: true }));
+                        select.blur();
+                        flash(select);
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    function findNextButton() {
+        return [...document.querySelectorAll(
+            'button, input[type="button"], input[type="submit"], a'
+        )].find(element => {
+            if (!isVisible(element)) return false;
+            if (element.closest('#bwu2-ticket-assistant')) return false;
+
+            const text = normalise(
+                element.innerText
+                || element.value
+                || element.textContent
+                || element.getAttribute('aria-label')
+            );
+            if (text !== 'next') return false;
+
+            return !element.disabled
+                && element.getAttribute('aria-disabled') !== 'true'
+                && !element.classList.contains('disabled');
+        }) || null;
+    }
+
+    async function clickNextWhenReady(timeoutMs = 8000) {
+        const deadline = Date.now() + timeoutMs;
+
+        while (Date.now() < deadline) {
+            const next = findNextButton();
+            if (next) {
+                next.click();
+                flash(next);
+                return true;
+            }
+
+            await sleep(150);
+        }
+
+        return false;
+    }
+
+    async function advanceToNext(ui, message) {
+        ui.setStatus(message);
+        if (!await clickNextWhenReady()) {
+            throw new Error('Next button did not become available.');
+        }
+    }
+
+    function workflowRoot() {
+        return document.querySelector('#dynamic-content-container')
+            || document.querySelector('.workflowExecution')
+            || document.querySelector('main')
+            || document.body;
+    }
+
+    function workflowText() {
+        const root = workflowRoot();
+        return normalise(root.innerText || root.textContent);
+    }
+
+    function identifyRiverPage() {
+        const text = workflowText();
+        const placeholders = inputCandidates()
+            .map(input => normalise(input.getAttribute('placeholder')))
+            .join(' ');
+
+        if (
+            text.includes('pandash check')
+            || text.includes('lacks dg information')
+            || text.includes('couldn t be classified because it lacks dg')
+            || text.includes('could not be classified because it lacks dg')
+        ) return 'pandash';
+
+        if (
+            text.includes('issue at fc')
+            || (text.includes('inbound') && text.includes('outbound'))
+        ) return 'issue-at-fc';
+
+        if (
+            text.includes('please enter your asin information below')
+            || text.includes('type asin here')
+            || placeholders.includes('type asin here')
+        ) return 'asin';
+
+        if (
+            text.includes('relatedtts')
+            || text.includes('check for related ticket')
+            || text.includes('related tt')
+        ) return 'related-tts';
+
+        if (
+            text.includes('information w1')
+            || placeholders.includes('purchase order')
+            || placeholders.includes('vendor code')
+            || placeholders.includes('seller id')
+        ) return 'information';
+
+        if (
+            text.includes('sort non sort identification')
+            || (text.includes('sortable') && text.includes('non sortable'))
+        ) return 'sortability';
+
+        if (
+            text.includes('severity and asin title guide')
+            || placeholders.includes('units impacted')
+            || placeholders.includes('shipments impacted')
+        ) return 'severity';
+
+        if (
+            text.includes('images instruction and check window')
+            || text.includes('image confirmation')
+        ) return 'images';
+
+        if (text.includes('create issue')) return 'create-issue';
+        return 'unknown';
+    }
+
+    const INFORMATION_FIELDS = [
+        {
+            key: 'fnsku',
+            names: ['textinput23'],
+            aliases: ['X0 ASIN', 'FNSKU', 'FN SKU']
+        },
+        {
+            key: 'title',
+            names: ['textinput208'],
+            aliases: ['ASIN title', 'Product title', 'Title']
+        },
+        {
+            key: 'purchaseOrder',
+            names: ['textinput24'],
+            aliases: ['PO (Purchase Order)', 'Purchase Order', 'PO']
+        },
+        {
+            key: 'vendorCode',
+            names: ['textinput154'],
+            aliases: ['Vendor code or Seller ID', 'Vendor code', 'Seller ID']
+        },
+        {
+            key: 'inventoryCost',
+            names: ['textinput25'],
+            aliases: ['Inventory cost per unit', 'Cost per unit', 'Inventory cost']
+        },
+        {
+            key: 'physicalLocation',
+            names: ['textinput209'],
+            aliases: ['Physical location of the units', 'Physical location', 'Location of units']
+        }
+    ];
+
+    async function fillInformationReliably(payload, timeoutMs = 9000) {
+        const deadline = Date.now() + timeoutMs;
+        let bestFilled = 0;
+
+        while (Date.now() < deadline) {
+            let filled = 0;
+
+            for (const field of INFORMATION_FIELDS) {
+                const input = findInputField(field);
+                if (!input) continue;
+
+                const expected = String(
+                    field.key === 'fnsku'
+                        ? (isX0Identifier(payload.fnsku) ? payload.fnsku : 'n/a')
+                        : (payload[field.key] ?? 'n/a')
+                );
+                if (String(input.value ?? '') === expected) {
+                    filled += 1;
+                    continue;
+                }
+
+                if (await setInputValueReliably(input, expected, 3)) filled += 1;
+            }
+
+            bestFilled = Math.max(bestFilled, filled);
+            if (filled === INFORMATION_FIELDS.length) return filled;
+            await sleep(250);
+        }
+
+        return bestFilled;
+    }
+
+    async function fillAsinReliably(payload, timeoutMs = 9000) {
+        const deadline = Date.now() + timeoutMs;
+
+        while (Date.now() < deadline) {
+            const input = findInputField({
+                aliases: ['Type ASIN here', 'ASIN']
+            });
+
+            if (input && await setInputValueReliably(input, payload.asin, 5)) {
+                return true;
+            }
+
+            await sleep(200);
+        }
+
+        return false;
+    }
+
+    function findSeverityInput(kind) {
+        const aliases = kind === 'units'
+            ? ['Units impacted', 'Number of units impacted']
+            : ['Shipments impacted', 'Number of shipments impacted'];
+        return findInputField({ aliases });
+    }
+
+    async function prepareKnownPage(page, payload, ui) {
+        switch (page) {
+            case 'pandash': {
+                const selected = await selectChoiceByText([
+                    'The ASIN went through DG review but couldn\'t be classified because it lacks DG information',
+                    'The ASIN went through DG review but could not be classified because it lacks DG information',
+                    'lacks DG information',
+                    'couldn\'t be classified'
+                ]);
+                if (!selected) throw new Error('Step 1 DG option not found.');
+                await advanceToNext(ui, 'Step 1 selected • advancing…');
+                return;
+            }
+
+            case 'issue-at-fc': {
+                const selected = await selectChoiceByText([
+                    'Inbound',
+                    'FC Inbound Issue',
+                    'Inbound Issue'
+                ]);
+                if (!selected) throw new Error('Inbound option not found.');
+                await advanceToNext(ui, 'Inbound selected • advancing…');
+                return;
+            }
+
+            case 'asin': {
+                if (!await fillAsinReliably(payload)) {
+                    throw new Error(`ASIN field would not retain ${payload.asin}.`);
+                }
+                await advanceToNext(ui, `${payload.asin} entered • advancing…`);
+                return;
+            }
+
+            case 'related-tts':
+                ui.setStatus('PAUSED');
+                return;
+
+            case 'information': {
+                const filled = await fillInformationReliably(payload);
+                if (filled < INFORMATION_FIELDS.length) {
+                    throw new Error(`Information fields filled ${filled}/${INFORMATION_FIELDS.length}.`);
+                }
+                ui.setStatus('Information filled 6/6 • verify, then click Next.');
+                return;
+            }
+
+            case 'sortability': {
+                const aliases = payload.sortable
+                    ? ['The ASIN is sortable', 'ASIN is sortable', 'Sortable']
+                    : ['The ASIN is non-sortable', 'ASIN is non-sortable', 'Non-sortable'];
+                if (!await selectChoiceByText(aliases)) {
+                    throw new Error(`${payload.sortable ? 'Sortable' : 'Non-sortable'} option not found.`);
+                }
+                await advanceToNext(
+                    ui,
+                    `${payload.sortable ? 'Sortable' : 'Non-sortable'} selected • advancing…`
+                );
+                return;
+            }
+
+            case 'severity': {
+                const units = findSeverityInput('units');
+                const shipments = findSeverityInput('shipments');
+                if (!units || !shipments) throw new Error('Severity inputs not found.');
+
+                const unitsSet = await setInputValueReliably(
+                    units,
+                    payload.inventoryQuantity ?? 0,
+                    4
+                );
+                const shipmentsSet = await setInputValueReliably(shipments, 0, 4);
+                if (!unitsSet || !shipmentsSet) throw new Error('Severity values did not retain.');
+
+                await advanceToNext(
+                    ui,
+                    `Inventory ${payload.inventoryQuantity ?? 0} • Shipments 0 • advancing…`
+                );
+                return;
+            }
+
+            case 'images': {
+                const selected = await selectVisibleOption('Yes')
+                    || await selectChoiceByText(['Yes']);
+                if (!selected) throw new Error('Image confirmation Yes option not found.');
+                await advanceToNext(ui, 'Image confirmation Yes selected • advancing…');
+                return;
+            }
+
+            case 'create-issue':
+                ui.setStatus('STOPPED • Create Issue and submission remain manual.');
+                flash(ui.panel);
+                return;
+
+            default:
+                throw new Error('Supported RIVER page not found.');
+        }
+    }
+
+    function startRiver() {
+        const ui = makePanel('left');
+        let preparing = false;
+        let stopped = false;
+        let transitionToken = 0;
+        let workToken = 0;
+
+        async function prepareCurrentPage(reason = 'RUN', timeoutMs = 10000) {
+            if (preparing || stopped) return;
+
+            const payload = readPayload();
+            if (!payload) {
+                ui.setItem('');
+                ui.setStatus('No saved FCResearch data.');
+                return;
+            }
+
+            const token = ++workToken;
+            ui.setItem(payloadIdentifier(payload));
+            preparing = true;
+            runButton.disabled = true;
+            runButton.textContent = 'WORKING…';
+            ui.setStatus(`${reason} • waiting for RIVER step…`);
+
+            try {
+                const deadline = Date.now() + timeoutMs;
+                let page = 'unknown';
+
+                while (Date.now() < deadline) {
+                    if (stopped || token !== workToken) return;
+                    page = identifyRiverPage();
+                    if (page !== 'unknown') break;
+                    await sleep(200);
+                }
+
+                if (stopped || token !== workToken) return;
+                if (page === 'unknown') {
+                    throw new Error('RIVER step not recognised. Click RUN to retry.');
+                }
+
+                await prepareKnownPage(page, payload, ui);
+            } catch (error) {
+                if (!stopped && token === workToken) {
+                    ui.setStatus(`WAITING • ${error.message}`);
+                    console.warn('[Ticket Assistant]', error);
+                }
+            } finally {
+                if (token === workToken) {
+                    preparing = false;
+                    runButton.disabled = false;
+                    runButton.textContent = 'RUN';
+                }
+            }
+        }
+
+        async function prepareAfterTransition(previousPage, token) {
+            const deadline = Date.now() + 12000;
+
+            while (Date.now() < deadline) {
+                if (stopped || token !== transitionToken) return;
+
+                const page = identifyRiverPage();
+                if (page !== 'unknown' && page !== previousPage) {
+                    await prepareCurrentPage('Page loaded');
+                    return;
+                }
+
+                await sleep(200);
+            }
+
+            if (!stopped && token === transitionToken) {
+                ui.setStatus('Next page was not detected • click RUN to retry.');
+            }
+        }
+
+        const runButton = button('RUN', () => {
+            stopped = false;
+            void prepareCurrentPage('Manual RUN');
+        }, true);
+
+        const stopButton = button('STOP / CLEAR', () => {
+            stopped = true;
+            preparing = false;
+            workToken += 1;
+            transitionToken += 1;
+            GM_setValue(STORAGE_KEY, null);
+            ui.setItem('');
+            ui.setStatus('STOPPED / CLEARED');
+            runButton.disabled = false;
+            runButton.textContent = 'RUN';
+            flash(ui.panel);
+        });
+
+        ui.actions.append(runButton, stopButton);
+
+        const existing = readPayload();
+        ui.setItem(payloadIdentifier(existing));
+        ui.setStatus(existing ? 'READY' : 'No saved FCResearch data.');
+
+        document.addEventListener('click', event => {
+            if (stopped) return;
+
+            const clicked = event.target instanceof Element
+                ? event.target.closest('button, input[type="button"], input[type="submit"], a')
+                : null;
+            if (!clicked || clicked.closest('#bwu2-ticket-assistant')) return;
+
+            const text = normalise(
+                clicked.innerText
+                || clicked.value
+                || clicked.textContent
+                || clicked.getAttribute('aria-label')
+            );
+            if (text !== 'next' && text !== 'previous') return;
+
+            const previousPage = identifyRiverPage();
+            const token = ++transitionToken;
+            setTimeout(() => void prepareAfterTransition(previousPage, token), 50);
+        }, true);
+
+        window.addEventListener('popstate', () => {
+            if (stopped) return;
+            const token = ++transitionToken;
+            setTimeout(() => void prepareAfterTransition('unknown', token), 50);
+        });
+
+        window.addEventListener('hashchange', () => {
+            if (stopped) return;
+            const token = ++transitionToken;
+            setTimeout(() => void prepareAfterTransition('unknown', token), 50);
+        });
+
+        // One bounded preparation pass when RIVER opens/reloads. No observer or idle polling.
+        if (existing) setTimeout(() => void prepareCurrentPage('Page loaded'), 100);
+    }
+
+    if (isFCResearch) startFCResearch();
+    else if (isRiver) startRiver();
+})();
