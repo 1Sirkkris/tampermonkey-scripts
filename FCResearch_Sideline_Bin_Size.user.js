@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v0.1.1 FCResearch Sideline Bin Size
+// @name         v0.1.2 FCResearch Sideline Bin Size
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.1
+// @version      0.1.2
 // @description  Pulls Sideline binDescription into FCResearch using a user-supplied csX/tsX container.
 // @author       1Sirkkris / ChatGPT
 // @match        http://fcresearch-fe.aka.amazon.com/*
@@ -30,7 +30,7 @@
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
   const PANEL_ID = 'fcr-sideline-bin-panel';
 
-  let lastFnsku = '';
+  let lastItem = '';
   let requestRunning = false;
 
   function normalise(value) {
@@ -39,6 +39,10 @@
 
   function validContainer(value) {
     return /^(?:csX|tsX)[A-Za-z0-9]+$/i.test(normalise(value));
+  }
+
+  function validItem(value) {
+    return /^(?:B[A-Z0-9]{9}|X[A-Z0-9]{9})$/i.test(normalise(value));
   }
 
   function clearContainer() {
@@ -71,18 +75,30 @@
     return value;
   }
 
-  function extractFnsku() {
+  function extractCurrentItem() {
     const params = new URLSearchParams(location.search);
     const queryValue = normalise(params.get('s'));
-    if (/^X[A-Z0-9]{9}$/i.test(queryValue)) return queryValue.toUpperCase();
+    if (validItem(queryValue)) return queryValue.toUpperCase();
 
-    for (const element of document.querySelectorAll('a, td, div, span')) {
-      const text = normalise(element.textContent);
-      if (/^X[A-Z0-9]{9}$/i.test(text)) return text.toUpperCase();
+    const searchInput = [...document.querySelectorAll('input')].find(input => validItem(input.value));
+    if (searchInput) return normalise(searchInput.value).toUpperCase();
+
+    const productSection = [...document.querySelectorAll('section, div')].find(el => {
+      const heading = el.querySelector('h1, h2, h3, h4');
+      return normalise(heading?.textContent) === 'Product';
+    });
+
+    if (productSection) {
+      const asinLabel = [...productSection.querySelectorAll('td, th, div, span')]
+        .find(el => normalise(el.textContent) === 'ASIN');
+      const row = asinLabel?.closest('tr');
+      if (row) {
+        const match = normalise(row.textContent).match(/\bB[A-Z0-9]{9}\b/i);
+        if (match) return match[0].toUpperCase();
+      }
     }
 
-    const match = (document.body?.innerText || '').match(/\bX[A-Z0-9]{9}\b/i);
-    return match ? match[0].toUpperCase() : '';
+    return '';
   }
 
   function findDimensionsAnchor() {
@@ -118,7 +134,7 @@
     button.addEventListener('click', () => {
       const replacement = askContainer(savedContainer());
       if (replacement) {
-        lastFnsku = '';
+        lastItem = '';
         tick();
       }
     });
@@ -161,9 +177,9 @@
     return `amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.${id}`;
   }
 
-  function lookup(fnsku, container) {
+  function lookup(itemBarcode, container) {
     requestRunning = true;
-    status('Checking…');
+    status(`Checking ${itemBarcode}…`);
 
     GM_xmlhttpRequest({
       method: 'POST',
@@ -176,7 +192,7 @@
         containerScannableId: container,
         isMasterpack: null,
         itemAndonContext: null,
-        itemBarcode: fnsku,
+        itemBarcode,
         requestId: requestId(),
         tool: 'V3'
       }),
@@ -197,9 +213,18 @@
           return;
         }
 
-        const item = Array.isArray(payload.items)
-          ? payload.items.find(entry => entry?.binDescription) || payload.items[0]
-          : null;
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const exactItem = items.find(entry => {
+          const values = [
+            entry?.scannableId,
+            entry?.value,
+            entry?.skuDetail?.fnSku,
+            entry?.skuDetail?.asin,
+            entry?.skuDetail?.fcSku
+          ].map(value => normalise(value).toUpperCase());
+          return values.includes(itemBarcode.toUpperCase());
+        });
+        const item = exactItem || items.find(entry => entry?.binDescription) || items[0];
 
         if (item?.binDescription) {
           status(item.binDescription);
@@ -224,8 +249,8 @@
   function tick() {
     ensurePanel();
 
-    const fnsku = extractFnsku();
-    if (!fnsku || requestRunning || fnsku === lastFnsku) return;
+    const currentItem = extractCurrentItem();
+    if (!currentItem || requestRunning || currentItem === lastItem) return;
 
     const container = savedContainer() || askContainer();
     if (!container) {
@@ -233,8 +258,8 @@
       return;
     }
 
-    lastFnsku = fnsku;
-    lookup(fnsku, container);
+    lastItem = currentItem;
+    lookup(currentItem, container);
   }
 
   ensurePanel();
