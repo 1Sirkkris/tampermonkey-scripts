@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         FCResearch → RIVER Ticket Assistant v0.2.12
+// @name         FCResearch → RIVER Ticket Assistant v0.2.13
 // @namespace    bwu2-ticket-assistant
-// @version      0.2.12
+// @version      0.2.13
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_RIVER_Ticket_Assistant.js
 // @description  Runs the RIVER core, reads the newest PO/vendor directly, and launches from the PanDash L0 badge.
@@ -230,43 +230,101 @@
     }
 
     function installFinalStepSafetyNet() {
-        let clicking = false;
-        const run = () => {
-            const text = norm(document.body?.innerText);
-            if (!text.includes('images instruction and check window')) return;
+        let advancing = false;
+        let lastAdvanceAttempt = 0;
+
+        const nativeSelectSetter = Object.getOwnPropertyDescriptor(
+            HTMLSelectElement.prototype,
+            'value'
+        )?.set;
+
+        const selectYesReliably = select => {
+            const yes = [...select.options].find(option => norm(option.textContent) === 'yes');
+            if (!yes) return false;
+
+            if (nativeSelectSetter) nativeSelectSetter.call(select, yes.value);
+            else select.value = yes.value;
+            yes.selected = true;
+            select.selectedIndex = yes.index;
+            select.dispatchEvent(new Event('input', { bubbles: true }));
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            select.dispatchEvent(new KeyboardEvent('keyup', {
+                bubbles: true,
+                key: 'Enter',
+                code: 'Enter'
+            }));
+
+            const selected = select.options[select.selectedIndex];
+            return select.value === yes.value && norm(selected?.textContent) === 'yes';
+        };
+
+        const findNext = () => [...document.querySelectorAll(
+            'button, input[type="button"], input[type="submit"], a'
+        )].find(element => {
+            const text = norm(element.innerText || element.value || element.textContent || element.getAttribute('aria-label'));
+            return text === 'next';
+        });
+
+        const nextIsReady = next => Boolean(
+            next
+            && next.isConnected
+            && !next.disabled
+            && next.getAttribute('aria-disabled') !== 'true'
+            && !next.classList.contains('disabled')
+        );
+
+        const run = async () => {
+            const pageText = norm(document.body?.innerText);
+            if (!pageText.includes('images instruction and check window')) return;
+            if (advancing) return;
 
             const select = [...document.querySelectorAll('select')].find(item =>
                 [...item.options].some(option => norm(option.textContent) === 'yes')
             );
             if (!select) return;
 
-            const yes = [...select.options].find(option => norm(option.textContent) === 'yes');
-            if (!yes) return;
-            if (select.value !== yes.value) {
-                select.value = yes.value;
-                yes.selected = true;
-                select.dispatchEvent(new Event('input', { bubbles: true }));
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-                return;
-            }
-
-            const next = [...document.querySelectorAll('button, input[type="button"], input[type="submit"]')]
-                .find(button => norm(button.innerText || button.value || button.textContent) === 'next');
-            if (!next || next.disabled || next.getAttribute('aria-disabled') === 'true' || clicking) return;
-
-            clicking = true;
-            setTimeout(() => {
-                if (next.isConnected && !next.disabled && next.getAttribute('aria-disabled') !== 'true') {
-                    next.click();
+            advancing = true;
+            try {
+                let selected = false;
+                for (let attempt = 0; attempt < 6; attempt += 1) {
+                    selected = selectYesReliably(select);
+                    await new Promise(resolve => setTimeout(resolve, 180 + attempt * 70));
+                    const current = select.options[select.selectedIndex];
+                    if (selected && norm(current?.textContent) === 'yes') break;
                 }
-                setTimeout(() => { clicking = false; }, 1200);
-            }, 700);
+                if (!selected) return;
+
+                const deadline = Date.now() + 8000;
+                while (Date.now() < deadline) {
+                    const next = findNext();
+                    if (nextIsReady(next)) {
+                        lastAdvanceAttempt = Date.now();
+                        next.click();
+                        await new Promise(resolve => setTimeout(resolve, 500));
+
+                        if (!norm(document.body?.innerText).includes('images instruction and check window')) {
+                            return;
+                        }
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+            } finally {
+                advancing = false;
+            }
         };
 
-        const observer = new MutationObserver(run);
-        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-        setInterval(run, 500);
-        run();
+        const observer = new MutationObserver(() => void run());
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['disabled', 'aria-disabled', 'class', 'value']
+        });
+
+        setInterval(() => {
+            if (Date.now() - lastAdvanceAttempt > 600) void run();
+        }, 400);
+        void run();
     }
 
     if (/fcresearch|qifcr/i.test(location.hostname)) installFCResearchLaunch();
