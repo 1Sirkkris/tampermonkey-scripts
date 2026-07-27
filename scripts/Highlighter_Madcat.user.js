@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         v2.4 Highlighter + Madcat
-// @version      2.4
+// @name         v2.5 Highlighter + Madcat + Size
+// @version      2.5
 // @author       mojordaq
 // @author       jachyd
 // @author       ChatGPT
@@ -9,6 +9,8 @@
 // @include     /^https?:\/\/.*fcresearch.*\//
 // @include     /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      *
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Highlighter_Madcat.user.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Highlighter_Madcat.user.js
@@ -75,6 +77,32 @@ function waitForKeyElements(selector, callback, stopAfterFound, iframeSelector) 
         .fc-madcat-yes { background: #ffff00; }
         .fc-madcat-no { background: #ff0000; }
         .fc-madcat-loading { background: #d9d9d9; }
+        .fc-size-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 6px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            background: #e5e7eb;
+            color: #111827;
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1.4;
+            vertical-align: middle;
+            user-select: none;
+        }
+        .fc-size-change {
+            border: 0;
+            padding: 0 2px;
+            background: transparent;
+            color: #4b5563;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .fc-size-change:hover { color: #111827; text-decoration: underline; }
+        .fc-size-error { background: #fee2e2; color: #991b1b; }
         .fc-madcat-hit {
             background-color: #ffcc00 !important;
             color: #000 !important;
@@ -132,9 +160,9 @@ function findRowByHeader(labelRegex) {
 }
 
 function ensureBadgeCell() {
-    var asinRow = findRowByHeader(/^ASIN$/i) || findRowByHeader(/^ISBN$/i);
-    if (!asinRow) return null;
-    return asinRow.querySelector('td') || asinRow.lastElementChild || null;
+    var dimensionsRow = findRowByHeader(/^Dimensions$/i);
+    if (!dimensionsRow) return null;
+    return dimensionsRow.querySelector('td') || dimensionsRow.lastElementChild || null;
 }
 
 function ensureMadcatBadge() {
@@ -152,20 +180,7 @@ function ensureMadcatBadge() {
 }
 
 function ensureBinButton() {
-    var cell = ensureBadgeCell();
-    if (!cell) return null;
-
-    var btn = cell.querySelector('.fc-bin-btn');
-    if (!btn) {
-        btn = document.createElement('button');
-        btn.className = 'fc-bin-btn';
-        btn.type = 'button';
-        btn.textContent = 'Check Bin';
-        btn.title = 'Check up to 5 current inventory containers for Bin type';
-        btn.addEventListener('click', manualBinCheck);
-        cell.appendChild(btn);
-    }
-    return btn;
+    return null;
 }
 
 function setMadcatBadge(found) {
@@ -189,13 +204,204 @@ function setMadcatBadge(found) {
     }
 }
 
-function setBinText(binText) {
-    var badge = ensureMadcatBadge();
-    if (!badge) return;
+function ensureSizeBadge() {
+    var cell = ensureBadgeCell();
+    if (!cell) return null;
 
-    var txt = normalizeText(badge.textContent || '');
-    var base = txt.replace(/\s+\|\s+Bin:.*$/i, '');
-    badge.textContent = base + ' | Bin: ' + binText;
+    var badge = cell.querySelector('.fc-size-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'fc-size-badge';
+        badge.innerHTML = '<span class="fc-size-value">Size: Loading...</span><button type="button" class="fc-size-change" title="Change Sideline source container">Change</button>';
+        badge.querySelector('.fc-size-change').addEventListener('click', function () {
+            var replacement = askSidelineContainer(getSavedSidelineContainer());
+            if (replacement) {
+                sidelineLastItem = '';
+                runSidelineSizeLookup();
+            }
+        });
+        cell.appendChild(badge);
+    }
+    return badge;
+}
+
+function setBinText(binText, isError) {
+    var badge = ensureSizeBadge();
+    if (!badge) return;
+    badge.classList.toggle('fc-size-error', !!isError);
+    var value = badge.querySelector('.fc-size-value');
+    if (value) value.textContent = 'Size: ' + binText;
+}
+
+// ---------- SIDELINE VIRTUAL BIN SIZE ----------
+var SIDELINE_API_URL = 'https://aft-poirot-website-nrt.nrt.proxy.amazon.com/api/scanitem';
+var SIDELINE_CONTAINER_KEY = 'fcr_sideline_container';
+var SIDELINE_CONTAINER_TIME_KEY = 'fcr_sideline_container_saved_at';
+var SIDELINE_CONTAINER_MAX_AGE = 24 * 60 * 60 * 1000;
+var sidelineLastItem = '';
+var sidelineRequestBusy = false;
+
+function isValidSidelineContainer(value) {
+    return /^(?:csX|tsX)[A-Za-z0-9]+$/i.test(normalizeText(value));
+}
+
+function isValidSidelineItem(value) {
+    return /^(?:B[A-Z0-9]{9}|X[A-Z0-9]{9})$/i.test(normalizeText(value));
+}
+
+function clearSavedSidelineContainer() {
+    GM_setValue(SIDELINE_CONTAINER_KEY, '');
+    GM_setValue(SIDELINE_CONTAINER_TIME_KEY, 0);
+}
+
+function getSavedSidelineContainer() {
+    var value = normalizeText(GM_getValue(SIDELINE_CONTAINER_KEY, ''));
+    var savedAt = Number(GM_getValue(SIDELINE_CONTAINER_TIME_KEY, 0));
+
+    if (!isValidSidelineContainer(value) || !savedAt || Date.now() - savedAt > SIDELINE_CONTAINER_MAX_AGE) {
+        clearSavedSidelineContainer();
+        return '';
+    }
+    return value;
+}
+
+function askSidelineContainer(current) {
+    var entered = prompt('Enter valid Sideline source container (csX / tsX).\nSaved for 24 hours.', current || '');
+    if (entered === null) return '';
+
+    var value = normalizeText(entered);
+    if (!isValidSidelineContainer(value)) {
+        alert('Invalid container. Must begin with csX or tsX.');
+        return askSidelineContainer(current);
+    }
+
+    GM_setValue(SIDELINE_CONTAINER_KEY, value);
+    GM_setValue(SIDELINE_CONTAINER_TIME_KEY, Date.now());
+    return value;
+}
+
+function getCurrentSidelineItem() {
+    var params = new URLSearchParams(window.location.search);
+    var queryValue = normalizeText(params.get('s'));
+    if (isValidSidelineItem(queryValue)) return queryValue.toUpperCase();
+
+    var inputs = Array.from(document.querySelectorAll('input'));
+    for (var i = 0; i < inputs.length; i++) {
+        if (isValidSidelineItem(inputs[i].value)) return normalizeText(inputs[i].value).toUpperCase();
+    }
+
+    var asinRow = findRowByHeader(/^ASIN$/i) || findRowByHeader(/^ISBN$/i);
+    if (asinRow) {
+        var asinMatch = normalizeText(asinRow.textContent).match(/\bB[A-Z0-9]{9}\b/i);
+        if (asinMatch) return asinMatch[0].toUpperCase();
+    }
+
+    var fnskuRow = findRowByHeader(/^FNSku$/i);
+    if (fnskuRow) {
+        var fnskuMatch = normalizeText(fnskuRow.textContent).match(/\bX[A-Z0-9]{9}\b/i);
+        if (fnskuMatch) return fnskuMatch[0].toUpperCase();
+    }
+
+    return '';
+}
+
+function makeSidelineRequestId() {
+    var id = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now() + '-' + Math.random().toString(16).slice(2);
+    return 'amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.' + id;
+}
+
+function fetchSidelineBinSize(itemBarcode, container) {
+    sidelineRequestBusy = true;
+    setBinText('Checking...');
+
+    GM_xmlhttpRequest({
+        method: 'POST',
+        url: SIDELINE_API_URL,
+        headers: {
+            'Accept': '*/*',
+            'Content-Type': 'application/json'
+        },
+        data: JSON.stringify({
+            containerScannableId: container,
+            isMasterpack: null,
+            itemAndonContext: null,
+            itemBarcode: itemBarcode,
+            requestId: makeSidelineRequestId(),
+            tool: 'V3'
+        }),
+        timeout: 15000,
+        anonymous: false,
+        onload: function (response) {
+            sidelineRequestBusy = false;
+            var payload;
+
+            try {
+                payload = JSON.parse(response.responseText || '{}');
+            } catch (e) {
+                setBinText('Bad response (' + response.status + ')', true);
+                return;
+            }
+
+            if (response.status === 401 || response.status === 403) {
+                setBinText('Open Sideline, then refresh', true);
+                return;
+            }
+
+            var items = Array.isArray(payload.items) ? payload.items : [];
+            var wanted = itemBarcode.toUpperCase();
+            var exactItem = items.find(function (entry) {
+                var values = [
+                    entry && entry.scannableId,
+                    entry && entry.value,
+                    entry && entry.skuDetail && entry.skuDetail.fnSku,
+                    entry && entry.skuDetail && entry.skuDetail.asin,
+                    entry && entry.skuDetail && entry.skuDetail.fcSku
+                ].map(function (value) {
+                    return normalizeText(value).toUpperCase();
+                });
+                return values.indexOf(wanted) !== -1;
+            });
+
+            var item = exactItem || items.find(function (entry) {
+                return entry && entry.binDescription;
+            }) || items[0];
+
+            if (item && item.binDescription) {
+                setBinText(item.binDescription, false);
+                return;
+            }
+
+            var message = String(payload.message || payload.errorMessage || payload.error || 'No size returned');
+            if (/container|source/i.test(message)) clearSavedSidelineContainer();
+            setBinText(message, true);
+        },
+        ontimeout: function () {
+            sidelineRequestBusy = false;
+            setBinText('Timed out', true);
+        },
+        onerror: function () {
+            sidelineRequestBusy = false;
+            setBinText('Request failed', true);
+        }
+    });
+}
+
+function runSidelineSizeLookup() {
+    ensureSizeBadge();
+
+    var item = getCurrentSidelineItem();
+    if (!item || sidelineRequestBusy || item === sidelineLastItem) return;
+
+    var container = getSavedSidelineContainer() || askSidelineContainer('');
+    if (!container) {
+        setBinText('Container required', true);
+        return;
+    }
+
+    sidelineLastItem = item;
+    fetchSidelineBinSize(item, container);
 }
 
 function findInventoryHistoryContainer() {
@@ -252,7 +458,8 @@ function applyMadcatFromContainer(container) {
 
 function updateMadcatState() {
     ensureMadcatBadge();
-    ensureBinButton();
+    ensureSizeBadge();
+    runSidelineSizeLookup();
     var container = findInventoryHistoryContainer();
     if (!container) return false;
     return applyMadcatFromContainer(container);
@@ -685,12 +892,15 @@ $(document).ready(function () {
         });
 
         ensureMadcatBadge();
-        ensureBinButton();
+        ensureSizeBadge();
+        runSidelineSizeLookup();
         scheduleMadcatChecks();
     });
 
     waitForKeyElements('table', function () {
-        ensureBinButton();
+        ensureMadcatBadge();
+        ensureSizeBadge();
+        runSidelineSizeLookup();
         scheduleMadcatChecks();
     });
 
@@ -698,5 +908,7 @@ $(document).ready(function () {
     window.addEventListener('popstate', scheduleMadcatChecks, true);
 
     scheduleMadcatChecks();
+    runSidelineSizeLookup();
+    setInterval(runSidelineSizeLookup, 1000);
 });
 // ==/UserScript==
