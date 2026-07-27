@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v1.1.1 SidelineApp Helper CLEAN TEST
+// @name         v1.2.0 SidelineApp Helper CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      1.1.1
-// @description  Clean Sideline helper with Tote Queue, Scrubber warning, Qty, Lazy progress, expiry picker.
+// @version      1.2.0
+// @description  Clean Sideline helper with Tote Queue, Scrubber warning, Qty, Lazy progress, Predicant recovery and expiry picker.
 // @match        https://aft-poirot-website-nrt.nrt.proxy.amazon.com/*
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
@@ -12,16 +12,16 @@
 
 (() => {
   'use strict';
-  if (window.__sidelineCleanTest_v111) return;
-  window.__sidelineCleanTest_v111 = true;
+  if (window.__sidelineCleanTest_v120) return;
+  window.__sidelineCleanTest_v120 = true;
 
-  const VERSION = '1.1.1';
+  const VERSION = '1.2.0';
   const $ = (s, r = document) => { try { return r.querySelector(s); } catch { return null; } };
   const $$ = (s, r = document) => { try { return [...r.querySelectorAll(s)]; } catch { return []; } };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = v => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
   const helperSelector = '#sh-dock,#sh-queue,#sh-scrub,#sh-qty,#sh-lazy,#sh-expiry,#sh-scrub-warning';
-  const state = { owner: '', scrubBusy: false, queueBusy: false, lazyBusy: false, expiryBusy: false };
+  const state = { owner:'', scrubBusy:false, queueBusy:false, lazyBusy:false, expiryBusy:false };
 
   function visible(el) {
     if (!(el instanceof Element) || !el.isConnected || el.hidden) return false;
@@ -30,8 +30,10 @@
   }
   function enabled(el) { return visible(el) && !el.disabled && !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true'; }
   function appElements(selector) { return $$(selector).filter(el => !el.closest(helperSelector)); }
+  function appText() { return norm(document.body?.innerText || document.body?.textContent || ''); }
   function screen() {
-    const t = norm(document.body?.innerText || document.body?.textContent || '');
+    const t = appText();
+    if (t.includes('predicant')) return 'PREDICANT';
     if (t.includes('enter quantity')) return 'QTY';
     if (t.includes('verify item')) return 'VERIFY';
     if (t.includes('scan destination container')) return 'DEST';
@@ -77,8 +79,8 @@
     const old = input.value;
     if (desc?.set) desc.set.call(input, String(value)); else input.value = String(value);
     input._valueTracker?.setValue?.(old);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('input', { bubbles:true }));
+    input.dispatchEvent(new Event('change', { bubbles:true }));
     return true;
   }
   function enter(el) {
@@ -91,12 +93,12 @@
     target.click();
     return true;
   }
-  async function waitFor(test, timeout = 10000, gap = 50) {
+  async function waitFor(test, timeout=10000, gap=50) {
     const end = Date.now() + timeout;
     while (Date.now() < end) { const value = test(); if (value) return value; await sleep(gap); }
     return null;
   }
-  async function fillAndConfirm(value, expected = '') {
+  async function fillAndConfirm(value, expected='') {
     const input = await waitFor(() => (!expected || screen() === expected) && scanInput(), 12000, 60);
     if (!input) return false;
     input.focus(); input.select?.(); setValue(input, ''); await sleep(10); setValue(input, value); await sleep(25);
@@ -121,27 +123,12 @@
 
   const feature = { queue:false, scrub:false, qty:false, lazy:false };
   const panels = {};
-  function panel(id, title, key) {
-    const root = document.createElement('div'); root.id=id; root.className='sh-panel'; root.innerHTML=`<div class="sh-title">${title}</div>`; root.style.display='none'; document.body.appendChild(root); panels[key]=root; return root;
-  }
-  function mountDock() {
-    if ($('#sh-dock')) return;
-    const dock=document.createElement('div'); dock.id='sh-dock';
-    for (const [key,label] of [['queue','Tote'],['scrub','Scrub'],['lazy','Lazy'],['qty','QTY']]) {
-      const button=document.createElement('button'); button.textContent=label; button.dataset.key=key; button.onclick=()=>{feature[key]=!feature[key];applyPanels();}; dock.appendChild(button);
-    }
-    document.body.appendChild(dock);
-  }
-  function applyPanels() {
-    $('#sh-dock')?.querySelectorAll('button').forEach(b=>b.classList.toggle('sh-on',feature[b.dataset.key]));
-    for (const [key,p] of Object.entries(panels)) p.style.display=feature[key]?'block':'none';
-    let bottom=58;
-    for (const key of ['lazy','scrub','queue']) { const p=panels[key]; if(!p||!feature[key])continue; p.style.bottom=`${bottom}px`; bottom+=Math.max(80,p.offsetHeight)+10; }
-    renderScrub();
-  }
+  function panel(id,title,key){const root=document.createElement('div');root.id=id;root.className='sh-panel';root.innerHTML=`<div class="sh-title">${title}</div>`;root.style.display='none';document.body.appendChild(root);panels[key]=root;return root;}
+  function mountDock(){if($('#sh-dock'))return;const dock=document.createElement('div');dock.id='sh-dock';for(const[key,label]of[['queue','Tote'],['scrub','Scrub'],['lazy','Lazy'],['qty','QTY']]){const b=document.createElement('button');b.textContent=label;b.dataset.key=key;b.onclick=()=>{feature[key]=!feature[key];applyPanels();};dock.appendChild(b);}document.body.appendChild(dock);}
+  function applyPanels(){$('#sh-dock')?.querySelectorAll('button').forEach(b=>b.classList.toggle('sh-on',feature[b.dataset.key]));for(const[key,p]of Object.entries(panels))p.style.display=feature[key]?'block':'none';let bottom=58;for(const key of['lazy','scrub','queue']){const p=panels[key];if(!p||!feature[key])continue;p.style.bottom=`${bottom}px`;bottom+=Math.max(80,p.offsetHeight)+10;}renderScrub();}
 
   const scrubPanel=panel('sh-scrub',`Tote Scrubber v${VERSION}`,'scrub');
-  const scrubStatus=document.createElement('div'); scrubStatus.className='sh-status'; scrubPanel.appendChild(scrubStatus);
+  const scrubStatus=document.createElement('div');scrubStatus.className='sh-status';scrubPanel.appendChild(scrubStatus);
   function renderScrub(){scrubStatus.textContent=feature.scrub?'ACTIVE — Change container → Yes':'OFF';let w=$('#sh-scrub-warning');if(feature.scrub&&!w){w=document.createElement('div');w.id='sh-scrub-warning';w.textContent='⚠ TOTE SCRUBBER ACTIVE — OPENED CONTAINERS WILL BE EMPTIED ⚠';document.body.appendChild(w);}if(!feature.scrub&&w)w.remove();}
   async function scrubTick(){if(!feature.scrub||state.scrubBusy||state.owner==='queue'||state.owner==='lazy')return;const change=changeButton();if(!change)return;state.scrubBusy=true;state.owner='scrub';try{click(change);const yes=await waitFor(()=>modalButton('yes'),3000,20);if(yes)click(yes);}finally{state.scrubBusy=false;state.owner='';}}
 
@@ -160,20 +147,67 @@
   for(let i=1;i<=10;i++){const b=document.createElement('button');b.className='sh-btn';b.textContent=i;b.onclick=()=>runQty(i);qtyGrid.appendChild(b);}
   async function runQty(qty){if(state.owner)return;state.owner='qty';qtyStatus.textContent=`QTY ${qty}`;try{if(screen()==='VERIFY'){const b=confirmButton();if(b)click(b);}const input=await waitFor(()=>screen()==='QTY'&&scanInput(),5000,40);if(!input)throw new Error('quantity screen not found');input.focus();input.select?.();setValue(input,'');await sleep(10);setValue(input,qty);await sleep(25);const b=confirmButton();enabled(b)?click(b):enter(input);qtyStatus.textContent=`QTY ${qty} sent`;}catch(e){qtyStatus.textContent=e.message;}finally{setTimeout(()=>{state.owner='';},150);}}
 
-  const lazy={running:false,paused:false,stage:'IDLE',index:0,items:[],src:'',dest:'',error:''};
+  const lazy={running:false,paused:false,predicant:false,recovering:false,stage:'IDLE',index:0,items:[],src:'',dest:'',error:''};
   const lazyPanel=panel('sh-lazy',`Lazy Sideline v${VERSION}`,'lazy');
   lazyPanel.insertAdjacentHTML('beforeend','<div class="sh-row"><input class="sh-input" data-f="src" placeholder="Source container (csX / tsX)"><input class="sh-input" data-f="dest" placeholder="Destination container (csX / tsX)"></div><textarea class="sh-input sh-area" data-f="items" placeholder="Scan item barcodes — one per line"></textarea><label style="display:block;margin:7px 0"><input type="checkbox" data-f="clear"> Clear source when done</label><div class="sh-grid4"><button class="sh-btn sh-on" data-a="start">Start</button><button class="sh-btn" data-a="pause">Pause</button><button class="sh-btn sh-stop" data-a="stop">Stop</button><button class="sh-btn" data-a="reset">Reset</button></div><div class="sh-metrics"><div class="sh-metric">Total<b data-m="total">0</b></div><div class="sh-metric">Unique<b data-m="unique">0</b></div><div class="sh-metric">Remaining<b data-m="remaining">0</b></div></div><div class="sh-status"></div><div class="sh-error"></div><div class="sh-progress"></div>');
   const lSrc=$('[data-f="src"]',lazyPanel),lDest=$('[data-f="dest"]',lazyPanel),lItems=$('[data-f="items"]',lazyPanel),lClear=$('[data-f="clear"]',lazyPanel),lStatus=$('.sh-status',lazyPanel),lError=$('.sh-error',lazyPanel),lProgress=$('.sh-progress',lazyPanel),mTotal=$('[data-m="total"]',lazyPanel),mUnique=$('[data-m="unique"]',lazyPanel),mRemaining=$('[data-m="remaining"]',lazyPanel);
   function validContainer(v){return /^(?:cs|ts)x[0-9a-z_-]+$/i.test(String(v).trim());}
   function parseItems(text){const m=new Map();for(const v of String(text).split(/\r?\n/).map(x=>x.trim()).filter(Boolean))m.set(v,(m.get(v)||0)+1);return[...m].map(([code,qty])=>({code,qty}));}
   function refreshItems(){if(!lazy.running){lazy.items=parseItems(lItems.value);lazy.index=0;}renderLazy();}
-  function renderLazy(note=''){const cur=lazy.items[lazy.index],total=lazy.items.reduce((s,x)=>s+x.qty,0),unique=lazy.items.length,remaining=Math.max(0,unique-lazy.index);mTotal.textContent=total;mUnique.textContent=unique;mRemaining.textContent=remaining;lStatus.textContent=`${lazy.running?(lazy.paused?'PAUSED':'RUNNING'):'IDLE'} | ${lazy.stage}${cur?` | ${cur.code} x${cur.qty}`:''}${note?' | '+note:''}`;lError.textContent=lazy.error;lProgress.innerHTML=lazy.items.map((it,i)=>`<div class="sh-item ${i===lazy.index&&lazy.running?'current':''}">${i<lazy.index?'✓ ':i===lazy.index&&lazy.running?'▶ ':'• '}${it.code} ×${it.qty}</div>`).join('');}
+  function renderLazy(note=''){const cur=lazy.items[lazy.index],total=lazy.items.reduce((s,x)=>s+x.qty,0),unique=lazy.items.length,remaining=Math.max(0,unique-lazy.index);mTotal.textContent=total;mUnique.textContent=unique;mRemaining.textContent=remaining;const mode=lazy.recovering?'RECOVERING':lazy.predicant?'PREDICANT':lazy.running?(lazy.paused?'PAUSED':'RUNNING'):'IDLE';lStatus.textContent=`${mode} | ${lazy.stage}${cur?` | ${cur.code} x${cur.qty}`:''}${note?' | '+note:''}`;lError.textContent=lazy.error;lProgress.innerHTML=lazy.items.map((it,i)=>`<div class="sh-item ${i===lazy.index&&lazy.running?'current':''}">${i<lazy.index?'✓ ':i===lazy.index&&lazy.running?'▶ ':'• '}${it.code} ×${it.qty}</div>`).join('');}
+  function resetLazyReady(note='ready'){lazy.running=false;lazy.paused=false;lazy.predicant=false;lazy.recovering=false;lazy.stage='IDLE';lazy.index=0;lazy.items=[];lazy.src='';lazy.dest='';lazy.error='';lSrc.value='';lDest.value='';lItems.value='';state.owner='';renderLazy(note);setTimeout(()=>lSrc.focus(),0);}
   function installContainerAdvance(input,next){input.addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!=='Tab')return;e.preventDefault();const v=input.value.trim();if(!validContainer(v)){lazy.error='Container must start with csX or tsX.';input.value='';renderLazy();return;}lazy.error='';setTimeout(()=>next.focus(),0);renderLazy();});input.addEventListener('paste',()=>setTimeout(()=>{if(validContainer(input.value.trim())){lazy.error='';next.focus();}else{lazy.error='Container must start with csX or tsX.';input.value='';}renderLazy();},0));}
   installContainerAdvance(lSrc,lDest);installContainerAdvance(lDest,lItems);
   lItems.addEventListener('keydown',e=>{if(e.key!=='Enter')return;e.preventDefault();e.stopPropagation();const cleaned=String(lItems.value||'').replace(/[\t ]+$/gm,'').replace(/\n{2,}$/g,'\n').replace(/\n*$/,'');lItems.value=cleaned?`${cleaned}\n`:'';lItems.dispatchEvent(new Event('input',{bubbles:true}));});
   lItems.addEventListener('input',refreshItems);lItems.addEventListener('paste',()=>setTimeout(refreshItems,0));
-  async function lazyTick(){if(!lazy.running||lazy.paused||state.lazyBusy||(state.owner&&state.owner!=='lazy'))return;const item=lazy.items[lazy.index];if(!item){lazy.running=false;if(lClear.checked&&changeButton())await clearOpenContainer();state.owner='';renderLazy('done');return;}state.lazyBusy=true;state.owner='lazy';try{const s=screen();if(s==='EXPIRY'){lazy.paused=true;lazy.error='Expiry screen detected — use expiry helper, then Resume.';renderLazy();return;}if(lazy.stage==='SOURCE'){if(s==='SOURCE')await fillAndConfirm(lazy.src,'SOURCE');else if(['ITEM','VERIFY','QTY','DEST'].includes(s))lazy.stage='ITEM';}else if(lazy.stage==='ITEM'){if(s==='ITEM'){await fillAndConfirm(item.code,'ITEM');lazy.stage='VERIFY';}else if(s==='VERIFY')lazy.stage='VERIFY';else if(s==='SOURCE')lazy.stage='SOURCE';}else if(lazy.stage==='VERIFY'){if(s==='VERIFY'){const b=confirmButton();if(b)click(b);}else if(s==='QTY')lazy.stage='QTY';else if(s==='DEST')lazy.stage='DEST';}else if(lazy.stage==='QTY'){if(s==='QTY'){const input=scanInput();if(input){input.focus();input.select?.();setValue(input,'');await sleep(10);setValue(input,item.qty);await sleep(20);const b=confirmButton();enabled(b)?click(b):enter(input);}}else if(s==='DEST')lazy.stage='DEST';}else if(lazy.stage==='DEST'){if(s==='DEST'){await fillAndConfirm(lazy.dest,'DEST');lazy.stage='ADVANCE';}}else if(lazy.stage==='ADVANCE'&&['ITEM','SUCCESS','SOURCE'].includes(s)){lazy.index++;lazy.stage=s==='SOURCE'?'SOURCE':'ITEM';lazy.error='';}renderLazy();}catch(e){lazy.error=e.message;lazy.paused=true;renderLazy();}finally{state.lazyBusy=false;if(!lazy.running||lazy.paused)state.owner='';}}
-  lazyPanel.onclick=e=>{const a=e.target.dataset.a;if(!a)return;if(a==='start'){lazy.src=lSrc.value.trim();lazy.dest=lDest.value.trim();lazy.items=parseItems(lItems.value);lazy.index=0;lazy.error='';if(!validContainer(lazy.src)||!validContainer(lazy.dest)){lazy.error='SRC and DEST must start with csX or tsX.';renderLazy();return;}if(!lazy.items.length){lazy.error='No item barcodes.';renderLazy();return;}lazy.running=true;lazy.paused=false;lazy.stage='SOURCE';renderLazy('started');}if(a==='pause'){lazy.paused=!lazy.paused;e.target.textContent=lazy.paused?'Resume':'Pause';if(!lazy.paused){lazy.error='';state.owner='lazy';}else state.owner='';renderLazy();}if(a==='stop'){lazy.running=false;lazy.paused=false;lazy.stage='IDLE';state.owner='';renderLazy('stopped');}if(a==='reset'){lazy.running=false;lazy.paused=false;lazy.stage='IDLE';lazy.index=0;lazy.items=[];lazy.error='';lSrc.value=lDest.value=lItems.value='';state.owner='';renderLazy();}};
+
+  async function recoverPredicant(){
+    if(!lazy.predicant||lazy.recovering)return;
+    lazy.recovering=true;lazy.error='Closing empty destination container…';renderLazy();state.owner='lazy';
+    try{
+      await sleep(120);
+      const result=await clearOpenContainer();
+      if(result!=='cleared')throw new Error(result);
+      lazy.predicant=false;lazy.recovering=false;lazy.paused=false;lazy.stage='SOURCE';lazy.error='';renderLazy('destination cleared — resuming');
+    }catch(e){lazy.recovering=false;lazy.paused=true;lazy.error=`Predicant recovery failed: ${e.message}. Rescan DEST again.`;renderLazy();state.owner='';}
+  }
+  document.addEventListener('keydown',e=>{
+    if(!lazy.predicant||lazy.recovering||e.key!=='Enter')return;
+    const target=e.target;
+    if(!(target instanceof HTMLInputElement||target instanceof HTMLTextAreaElement)||target.closest(helperSelector))return;
+    if(norm(target.value)!==norm(lazy.dest))return;
+    setTimeout(recoverPredicant,40);
+  },true);
+
+  async function lazyTick(){
+    if(!lazy.running||lazy.recovering||state.lazyBusy||(state.owner&&state.owner!=='lazy'))return;
+    const s=screen();
+    if(s==='PREDICANT'){
+      lazy.predicant=true;lazy.paused=true;lazy.error=`Predicant detected — scan destination ${lazy.dest} again.`;renderLazy();state.owner='';return;
+    }
+    if(lazy.paused)return;
+    const item=lazy.items[lazy.index];
+    if(!item){
+      state.lazyBusy=true;state.owner='lazy';
+      try{if(lClear.checked&&changeButton()){const result=await clearOpenContainer();if(result!=='cleared')throw new Error(result);}resetLazyReady('complete — ready for next round');}
+      catch(e){lazy.paused=true;lazy.error=`Completion cleanup failed: ${e.message}`;renderLazy();state.owner='';}
+      finally{state.lazyBusy=false;}
+      return;
+    }
+    state.lazyBusy=true;state.owner='lazy';
+    try{
+      if(s==='EXPIRY'){lazy.paused=true;lazy.error='Expiry screen detected — use expiry helper, then Resume.';renderLazy();return;}
+      if(lazy.stage==='SOURCE'){if(s==='SOURCE')await fillAndConfirm(lazy.src,'SOURCE');else if(['ITEM','VERIFY','QTY','DEST'].includes(s))lazy.stage='ITEM';}
+      else if(lazy.stage==='ITEM'){if(s==='ITEM'){await fillAndConfirm(item.code,'ITEM');lazy.stage='VERIFY';}else if(s==='VERIFY')lazy.stage='VERIFY';else if(s==='SOURCE')lazy.stage='SOURCE';}
+      else if(lazy.stage==='VERIFY'){if(s==='VERIFY'){const b=confirmButton();if(b)click(b);}else if(s==='QTY')lazy.stage='QTY';else if(s==='DEST')lazy.stage='DEST';}
+      else if(lazy.stage==='QTY'){if(s==='QTY'){const input=scanInput();if(input){input.focus();input.select?.();setValue(input,'');await sleep(10);setValue(input,item.qty);await sleep(20);const b=confirmButton();enabled(b)?click(b):enter(input);}}else if(s==='DEST')lazy.stage='DEST';}
+      else if(lazy.stage==='DEST'){if(s==='DEST'){await fillAndConfirm(lazy.dest,'DEST');lazy.stage='ADVANCE';}}
+      else if(lazy.stage==='ADVANCE'&&['ITEM','SUCCESS','SOURCE'].includes(s)){lazy.index++;lazy.stage=s==='SOURCE'?'SOURCE':'ITEM';lazy.error='';}
+      renderLazy();
+    }catch(e){lazy.error=e.message;lazy.paused=true;renderLazy();}
+    finally{state.lazyBusy=false;if(!lazy.running||lazy.paused)state.owner='';}
+  }
+  lazyPanel.onclick=e=>{const a=e.target.dataset.a;if(!a)return;if(a==='start'){lazy.src=lSrc.value.trim();lazy.dest=lDest.value.trim();lazy.items=parseItems(lItems.value);lazy.index=0;lazy.error='';lazy.predicant=false;lazy.recovering=false;if(!validContainer(lazy.src)||!validContainer(lazy.dest)){lazy.error='SRC and DEST must start with csX or tsX.';renderLazy();return;}if(!lazy.items.length){lazy.error='No item barcodes.';renderLazy();return;}lazy.running=true;lazy.paused=false;lazy.stage='SOURCE';renderLazy('started');}if(a==='pause'){if(lazy.predicant||lazy.recovering)return;lazy.paused=!lazy.paused;e.target.textContent=lazy.paused?'Resume':'Pause';if(!lazy.paused){lazy.error='';state.owner='lazy';}else state.owner='';renderLazy();}if(a==='stop'){lazy.running=false;lazy.paused=false;lazy.predicant=false;lazy.recovering=false;lazy.stage='IDLE';state.owner='';renderLazy('stopped');}if(a==='reset')resetLazyReady('reset');};
   renderLazy();
 
   function expiryInputs(){const inputs=appElements('input,textarea').filter(visible);const hint=re=>inputs.find(el=>re.test(norm(`${el.name||''} ${el.id||''} ${el.placeholder||''} ${el.getAttribute('aria-label')||''}`)));const month=hint(/\b(mm|month)\b/),day=hint(/\b(dd|day)\b/),year=hint(/\b(yyyy|year)\b/);if(month&&day&&year)return{month,day,year};const text=inputs.filter(el=>['','text','tel','number','search'].includes(norm(el.type||'')));return text.length>=3?{month:text[0],day:text[1],year:text[2]}:null;}
