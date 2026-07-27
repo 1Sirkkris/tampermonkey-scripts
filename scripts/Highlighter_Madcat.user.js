@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         v2.6 Highlighter + Madcat + Size
-// @version      2.6
+// @name         v2.7 Highlighter + Madcat + Size
+// @version      2.7
 // @author       mojordaq
 // @author       jachyd
 // @author       ChatGPT
@@ -213,13 +213,20 @@ function ensureSizeBadge() {
         badge = document.createElement('span');
         badge.className = 'fc-size-badge';
         badge.innerHTML = '<span class="fc-size-value">Size: Loading...</span><button type="button" class="fc-size-change" title="Change Sideline source container">Change</button>';
-        badge.querySelector('.fc-size-change').addEventListener('click', function () {
+
+        var changeButton = badge.querySelector('.fc-size-change');
+        changeButton.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+
             var replacement = askSidelineContainer(getSavedSidelineContainer());
             if (replacement) {
                 sidelineLastItem = '';
-                runSidelineSizeLookup();
+                sidelineLastGoodSize = '';
+                runSidelineSizeLookup(true);
             }
         });
+
         cell.appendChild(badge);
     }
     return badge;
@@ -228,7 +235,18 @@ function ensureSizeBadge() {
 function setBinText(binText, isError) {
     var badge = ensureSizeBadge();
     if (!badge) return;
+
+    // Never replace a successful result with a later transient failure.
+    if (isError && sidelineLastGoodSize) {
+        badge.classList.remove('fc-size-error');
+        var kept = badge.querySelector('.fc-size-value');
+        if (kept) kept.textContent = 'Size: ' + sidelineLastGoodSize;
+        badge.title = 'Latest refresh failed; keeping last successful size.';
+        return;
+    }
+
     badge.classList.toggle('fc-size-error', !!isError);
+    badge.title = '';
     var value = badge.querySelector('.fc-size-value');
     if (value) value.textContent = 'Size: ' + binText;
 }
@@ -239,7 +257,9 @@ var SIDELINE_CONTAINER_KEY = 'fcr_sideline_container';
 var SIDELINE_CONTAINER_TIME_KEY = 'fcr_sideline_container_saved_at';
 var SIDELINE_CONTAINER_MAX_AGE = 24 * 60 * 60 * 1000;
 var sidelineLastItem = '';
+var sidelineLastGoodSize = '';
 var sidelineRequestBusy = false;
+var sidelineRequestSerial = 0;
 
 function isValidSidelineContainer(value) {
     return /^(?:csX|tsX)[A-Za-z0-9]+$/i.test(normalizeText(value));
@@ -268,11 +288,13 @@ function getSavedSidelineContainer() {
 function askSidelineContainer(current) {
     var entered = prompt('Enter valid Sideline source container (csX / tsX).\nSaved for 24 hours.', current || '');
     if (entered === null) return '';
+
     var value = normalizeText(entered);
     if (!isValidSidelineContainer(value)) {
         alert('Invalid container. Must begin with csX or tsX.');
-        return askSidelineContainer(current);
+        return '';
     }
+
     GM_setValue(SIDELINE_CONTAINER_KEY, value);
     GM_setValue(SIDELINE_CONTAINER_TIME_KEY, Date.now());
     return value;
@@ -303,13 +325,19 @@ function getCurrentSidelineItem() {
 }
 
 function makeSidelineRequestId() {
-    var id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(16).slice(2);
+    var id = (window.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now() + '-' + Math.random().toString(16).slice(2);
     return 'amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.' + id;
 }
 
 function fetchSidelineBinSize(itemBarcode, container) {
     sidelineRequestBusy = true;
+    sidelineLastGoodSize = '';
     setBinText('Checking...');
+
+    var requestSerial = ++sidelineRequestSerial;
+
     GM_xmlhttpRequest({
         method: 'POST',
         url: SIDELINE_API_URL,
@@ -325,10 +353,16 @@ function fetchSidelineBinSize(itemBarcode, container) {
         timeout: 15000,
         anonymous: false,
         onload: function (response) {
+            if (requestSerial !== sidelineRequestSerial) return;
             sidelineRequestBusy = false;
+
             var payload;
-            try { payload = JSON.parse(response.responseText || '{}'); }
-            catch (e) { setBinText('Bad response (' + response.status + ')', true); return; }
+            try {
+                payload = JSON.parse(response.responseText || '{}');
+            } catch (e) {
+                setBinText('Bad response (' + response.status + ')', true);
+                return;
+            }
 
             if (response.status === 401 || response.status === 403) {
                 setBinText('Open Sideline, then refresh', true);
@@ -345,33 +379,60 @@ function fetchSidelineBinSize(itemBarcode, container) {
                     entry && entry.skuDetail && entry.skuDetail.fnSku,
                     entry && entry.skuDetail && entry.skuDetail.asin,
                     entry && entry.skuDetail && entry.skuDetail.fcSku
-                ].map(function (value) { return normalizeText(value).toUpperCase(); });
+                ].map(function (value) {
+                    return normalizeText(value).toUpperCase();
+                });
                 return values.indexOf(wanted) !== -1;
             });
-            var item = exactItem || items.find(function (entry) { return entry && entry.binDescription; }) || items[0];
+
+            var item = exactItem ||
+                items.find(function (entry) { return entry && entry.binDescription; }) ||
+                items[0];
+
             if (item && item.binDescription) {
-                setBinText(item.binDescription, false);
+                sidelineLastGoodSize = normalizeText(item.binDescription);
+                setBinText(sidelineLastGoodSize, false);
                 return;
             }
+
             var message = String(payload.message || payload.errorMessage || payload.error || 'No size returned');
             if (/container|source/i.test(message)) clearSavedSidelineContainer();
             setBinText(message, true);
         },
-        ontimeout: function () { sidelineRequestBusy = false; setBinText('Request timed out', true); },
-        onerror: function () { sidelineRequestBusy = false; setBinText('Request failed', true); }
+        ontimeout: function () {
+            if (requestSerial !== sidelineRequestSerial) return;
+            sidelineRequestBusy = false;
+            setBinText('Request timed out', true);
+        },
+        onerror: function () {
+            if (requestSerial !== sidelineRequestSerial) return;
+            sidelineRequestBusy = false;
+            setBinText('Request failed', true);
+        }
     });
 }
 
-function runSidelineSizeLookup() {
+function runSidelineSizeLookup(force) {
     ensureSizeBadge();
+
     var currentItem = getCurrentSidelineItem();
-    if (!currentItem || sidelineRequestBusy || currentItem === sidelineLastItem) return;
-    var container = getSavedSidelineContainer() || askSidelineContainer('');
-    if (!container) { setBinText('Container required', true); return; }
+    if (!currentItem || sidelineRequestBusy) return;
+
+    if (currentItem !== sidelineLastItem) {
+        sidelineLastGoodSize = '';
+    } else if (!force) {
+        return;
+    }
+
+    var container = getSavedSidelineContainer();
+    if (!container) {
+        setBinText('Set container', true);
+        return;
+    }
+
     sidelineLastItem = currentItem;
     fetchSidelineBinSize(currentItem, container);
 }
-
 function findInventoryHistoryContainer() {
     var selectors = [
         '[data-section-type="inventory-history"]',
@@ -760,7 +821,7 @@ function fcCleanProductPanelCopy(ev) {
     // Only intercept when the selection contains injected script visuals that would pollute the copy.
     var rawSelectedText = String(sel.toString() || '');
     var normSelectedText = normalizeText(rawSelectedText);
-    var hasInjectedVisualText = /(madcat:|pandash|check bin|\bL\d+\b|✅|🚫)/i.test(normSelectedText);
+    var hasInjectedVisualText = /(madcat:|size:|pandash|check bin|\bL\d+\b|✅|🚫)/i.test(normSelectedText);
 
     if (!hasInjectedVisualText) {
         return;
@@ -861,20 +922,20 @@ $(document).ready(function () {
         ensureMadcatBadge();
         ensureSizeBadge();
         scheduleMadcatChecks();
-        runSidelineSizeLookup();
+        runSidelineSizeLookup(false);
     });
 
     waitForKeyElements('table', function () {
         ensureSizeBadge();
         scheduleMadcatChecks();
-        runSidelineSizeLookup();
+        runSidelineSizeLookup(false);
     });
 
     window.addEventListener('hashchange', scheduleMadcatChecks, true);
     window.addEventListener('popstate', scheduleMadcatChecks, true);
 
     scheduleMadcatChecks();
-    runSidelineSizeLookup();
-    setInterval(runSidelineSizeLookup, 1000);
+    runSidelineSizeLookup(false);
+    setInterval(function () { runSidelineSizeLookup(false); }, 1000);
 });
 // ==/UserScript==
