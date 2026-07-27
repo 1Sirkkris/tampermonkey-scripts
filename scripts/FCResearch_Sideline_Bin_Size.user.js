@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v0.1.0 FCResearch Sideline Bin Size
+// @name         v0.1.2 FCResearch Sideline Bin Size
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.0
+// @version      0.1.2
 // @description  Pulls Sideline binDescription into FCResearch using a user-supplied csX/tsX container.
 // @author       1Sirkkris / ChatGPT
 // @match        http://fcresearch-fe.aka.amazon.com/*
@@ -17,8 +17,8 @@
 // @grant        GM_setValue
 // @connect      aft-poirot-website-nrt.nrt.proxy.amazon.com
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Sideline_Bin_Size.user.js
-// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Sideline_Bin_Size.user.js
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_Sideline_Bin_Size.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_Sideline_Bin_Size.user.js
 // ==/UserScript==
 
 (() => {
@@ -28,146 +28,158 @@
   const STORAGE_KEY = 'fcr_sideline_container';
   const STORAGE_TIME_KEY = 'fcr_sideline_container_saved_at';
   const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-  const ROW_ID = 'fcr-sideline-bin-size-row';
+  const PANEL_ID = 'fcr-sideline-bin-panel';
 
-  let lastFnsku = '';
-  let lookupTimer = null;
+  let lastItem = '';
+  let requestRunning = false;
 
-  function normaliseContainer(value) {
+  function normalise(value) {
     return String(value || '').trim();
   }
 
-  function isValidContainer(value) {
-    return /^(?:csX|tsX)[A-Za-z0-9]+$/i.test(normaliseContainer(value));
+  function validContainer(value) {
+    return /^(?:csX|tsX)[A-Za-z0-9]+$/i.test(normalise(value));
   }
 
-  function clearSavedContainer() {
+  function validItem(value) {
+    return /^(?:B[A-Z0-9]{9}|X[A-Z0-9]{9})$/i.test(normalise(value));
+  }
+
+  function clearContainer() {
     GM_setValue(STORAGE_KEY, '');
     GM_setValue(STORAGE_TIME_KEY, 0);
   }
 
-  function getSavedContainer() {
-    const container = normaliseContainer(GM_getValue(STORAGE_KEY, ''));
+  function savedContainer() {
+    const value = normalise(GM_getValue(STORAGE_KEY, ''));
     const savedAt = Number(GM_getValue(STORAGE_TIME_KEY, 0));
-
-    if (!isValidContainer(container) || !savedAt || Date.now() - savedAt > MAX_AGE_MS) {
-      clearSavedContainer();
+    if (!validContainer(value) || !savedAt || Date.now() - savedAt > MAX_AGE_MS) {
+      clearContainer();
       return '';
     }
-
-    return container;
+    return value;
   }
 
-  function askForContainer(current = '') {
-    const entered = prompt(
-      'Enter a valid Sideline source container (csX / tsX).\nSaved for 24 hours.',
-      current
-    );
-
+  function askContainer(current = '') {
+    const entered = prompt('Enter valid Sideline source container (csX / tsX).\nSaved for 24 hours.', current);
     if (entered === null) return '';
 
-    const container = normaliseContainer(entered);
-    if (!isValidContainer(container)) {
-      alert('Invalid container. It must begin with csX or tsX.');
-      return askForContainer(current);
+    const value = normalise(entered);
+    if (!validContainer(value)) {
+      alert('Invalid container. Must begin with csX or tsX.');
+      return askContainer(current);
     }
 
-    GM_setValue(STORAGE_KEY, container);
+    GM_setValue(STORAGE_KEY, value);
     GM_setValue(STORAGE_TIME_KEY, Date.now());
-    return container;
+    return value;
   }
 
-  function getContainer() {
-    return getSavedContainer() || askForContainer();
-  }
+  function extractCurrentItem() {
+    const params = new URLSearchParams(location.search);
+    const queryValue = normalise(params.get('s'));
+    if (validItem(queryValue)) return queryValue.toUpperCase();
 
-  function findProductRows() {
-    return [...document.querySelectorAll('tr')];
-  }
+    const searchInput = [...document.querySelectorAll('input')].find(input => validItem(input.value));
+    if (searchInput) return normalise(searchInput.value).toUpperCase();
 
-  function getLabelText(row) {
-    const firstCell = row?.querySelector('th, td');
-    return firstCell?.textContent?.trim().replace(/\s+/g, ' ') || '';
-  }
+    const productSection = [...document.querySelectorAll('section, div')].find(el => {
+      const heading = el.querySelector('h1, h2, h3, h4');
+      return normalise(heading?.textContent) === 'Product';
+    });
 
-  function findRow(label) {
-    const wanted = label.toLowerCase();
-    return findProductRows().find(row => getLabelText(row).toLowerCase() === wanted) || null;
-  }
-
-  function extractFnsku() {
-    const row = findRow('FNSku');
-    if (row) {
-      const cells = row.querySelectorAll('th, td');
-      const value = [...cells].slice(1).map(cell => cell.textContent.trim()).join(' ');
-      const match = value.match(/\b(?:X\d{9}|B[A-Z0-9]{9})\b/i);
-      if (match) return match[0].toUpperCase();
+    if (productSection) {
+      const asinLabel = [...productSection.querySelectorAll('td, th, div, span')]
+        .find(el => normalise(el.textContent) === 'ASIN');
+      const row = asinLabel?.closest('tr');
+      if (row) {
+        const match = normalise(row.textContent).match(/\bB[A-Z0-9]{9}\b/i);
+        if (match) return match[0].toUpperCase();
+      }
     }
 
-    const pageText = document.body?.innerText || '';
-    const match = pageText.match(/FNSku\s*\n?\s*(X\d{9})\b/i);
-    return match ? match[1].toUpperCase() : '';
+    return '';
   }
 
-  function ensureDisplayRow() {
-    let row = document.getElementById(ROW_ID);
-    if (row) return row;
+  function findDimensionsAnchor() {
+    const candidates = [...document.querySelectorAll('td, th, div, span')];
+    return candidates.find(el => normalise(el.textContent) === 'Dimensions') || null;
+  }
 
-    const dimensionsRow = findRow('Dimensions');
-    if (!dimensionsRow || !dimensionsRow.parentElement) return null;
+  function ensurePanel() {
+    let panel = document.getElementById(PANEL_ID);
+    if (panel) return panel;
 
-    row = document.createElement('tr');
-    row.id = ROW_ID;
+    panel = document.createElement('div');
+    panel.id = PANEL_ID;
+    panel.innerHTML = '<b>Bin size:</b> <span data-value>Loaded — waiting for item</span> <button type="button" data-change>Change</button>';
+    Object.assign(panel.style, {
+      padding: '5px 8px',
+      margin: '4px 0',
+      border: '1px solid #9ca3af',
+      borderRadius: '4px',
+      background: '#f8fafc',
+      fontSize: '12px',
+      width: 'fit-content'
+    });
 
-    const labelCell = document.createElement('td');
-    labelCell.textContent = 'Bin description';
-    labelCell.style.fontWeight = '700';
-
-    const valueCell = document.createElement('td');
-    valueCell.colSpan = Math.max(1, dimensionsRow.children.length - 1);
-    valueCell.innerHTML = '<span data-bin-value>Waiting…</span> <button type="button" data-bin-change>Change container</button>';
-
-    const button = valueCell.querySelector('[data-bin-change]');
+    const button = panel.querySelector('[data-change]');
     Object.assign(button.style, {
       marginLeft: '8px',
-      padding: '2px 7px',
+      padding: '1px 6px',
       fontSize: '11px',
       cursor: 'pointer'
     });
 
     button.addEventListener('click', () => {
-      const current = getSavedContainer();
-      const replacement = askForContainer(current);
+      const replacement = askContainer(savedContainer());
       if (replacement) {
-        lastFnsku = '';
-        scheduleLookup(0);
+        lastItem = '';
+        tick();
       }
     });
 
-    row.append(labelCell, valueCell);
-    dimensionsRow.insertAdjacentElement('afterend', row);
-    return row;
-  }
-
-  function setStatus(text, kind = 'normal') {
-    const row = ensureDisplayRow();
-    const value = row?.querySelector('[data-bin-value]');
-    if (!value) return;
-
-    value.textContent = text;
-    value.style.fontWeight = kind === 'success' ? '700' : '600';
-    value.style.color = kind === 'error' ? '#b12704' : '';
-  }
-
-  function makeRequestId() {
-    if (crypto?.randomUUID) {
-      return `amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.${crypto.randomUUID()}`;
+    const anchor = findDimensionsAnchor();
+    if (anchor) {
+      const row = anchor.closest('tr');
+      if (row?.parentElement) {
+        const wrapper = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = Math.max(2, row.children.length || 2);
+        cell.appendChild(panel);
+        wrapper.appendChild(cell);
+        row.insertAdjacentElement('afterend', wrapper);
+      } else {
+        anchor.parentElement?.appendChild(panel);
+      }
+    } else {
+      Object.assign(panel.style, {
+        position: 'fixed',
+        right: '12px',
+        bottom: '12px',
+        zIndex: '99999'
+      });
+      document.body.appendChild(panel);
     }
-    return `amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    return panel;
   }
 
-  function lookupBinSize(fnsku, container) {
-    setStatus('Checking Sideline…');
+  function status(text, error = false) {
+    const value = ensurePanel().querySelector('[data-value]');
+    value.textContent = text;
+    value.style.color = error ? '#b12704' : '';
+    value.style.fontWeight = '700';
+  }
+
+  function requestId() {
+    const id = crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return `amzn1.fc.v1.common.request-id.v1.AFTPoirotWebsite.${id}`;
+  }
+
+  function lookup(itemBarcode, container) {
+    requestRunning = true;
+    status(`Checking ${itemBarcode}…`);
 
     GM_xmlhttpRequest({
       method: 'POST',
@@ -180,73 +192,77 @@
         containerScannableId: container,
         isMasterpack: null,
         itemAndonContext: null,
-        itemBarcode: fnsku,
-        requestId: makeRequestId(),
+        itemBarcode,
+        requestId: requestId(),
         tool: 'V3'
       }),
       timeout: 15000,
       anonymous: false,
       onload: response => {
+        requestRunning = false;
         let payload;
         try {
           payload = JSON.parse(response.responseText || '{}');
         } catch {
-          setStatus(`Bad response (${response.status})`, 'error');
+          status(`Bad response (${response.status})`, true);
           return;
         }
 
         if (response.status === 401 || response.status === 403) {
-          setStatus('Open Sideline once, then retry', 'error');
+          status('Open Sideline once, then refresh', true);
           return;
         }
 
-        const item = Array.isArray(payload.items)
-          ? payload.items.find(entry => entry?.binDescription) || payload.items[0]
-          : null;
-        const binDescription = item?.binDescription;
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const exactItem = items.find(entry => {
+          const values = [
+            entry?.scannableId,
+            entry?.value,
+            entry?.skuDetail?.fnSku,
+            entry?.skuDetail?.asin,
+            entry?.skuDetail?.fcSku
+          ].map(value => normalise(value).toUpperCase());
+          return values.includes(itemBarcode.toUpperCase());
+        });
+        const item = exactItem || items.find(entry => entry?.binDescription) || items[0];
 
-        if (payload.success && binDescription) {
-          setStatus(binDescription, 'success');
+        if (item?.binDescription) {
+          status(item.binDescription);
           return;
         }
 
-        const message = payload.message || payload.errorMessage || payload.error || '';
-        if (/container|source/i.test(String(message))) {
-          clearSavedContainer();
-          setStatus('Container rejected — click Change container', 'error');
-          return;
-        }
-
-        setStatus(message ? `No bin size: ${message}` : 'No bin size returned', 'error');
+        const message = String(payload.message || payload.errorMessage || payload.error || 'No bin size returned');
+        if (/container|source/i.test(message)) clearContainer();
+        status(message, true);
       },
-      ontimeout: () => setStatus('Sideline request timed out', 'error'),
-      onerror: () => setStatus('Sideline request blocked/failed', 'error')
+      ontimeout: () => {
+        requestRunning = false;
+        status('Request timed out', true);
+      },
+      onerror: () => {
+        requestRunning = false;
+        status('Request blocked/failed', true);
+      }
     });
   }
 
-  function runLookup() {
-    const fnsku = extractFnsku();
-    if (!fnsku) return;
+  function tick() {
+    ensurePanel();
 
-    ensureDisplayRow();
-    if (fnsku === lastFnsku) return;
+    const currentItem = extractCurrentItem();
+    if (!currentItem || requestRunning || currentItem === lastItem) return;
 
-    const container = getContainer();
+    const container = savedContainer() || askContainer();
     if (!container) {
-      setStatus('Container required', 'error');
+      status('Container required', true);
       return;
     }
 
-    lastFnsku = fnsku;
-    lookupBinSize(fnsku, container);
+    lastItem = currentItem;
+    lookup(currentItem, container);
   }
 
-  function scheduleLookup(delay = 250) {
-    clearTimeout(lookupTimer);
-    lookupTimer = setTimeout(runLookup, delay);
-  }
-
-  const observer = new MutationObserver(() => scheduleLookup());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-  scheduleLookup(500);
+  ensurePanel();
+  tick();
+  setInterval(tick, 1000);
 })();
