@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v1.3.5 SidelineApp Helper CLEAN TEST
+// @name         v1.3.6 SidelineApp Helper CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      1.3.5
+// @version      1.3.6
 // @description  Clean Sideline helper with Tote Queue, Scrubber, Qty, Lazy, Predicant recovery and inline expiry picker.
 // @match        https://aft-poirot-website-nrt.nrt.proxy.amazon.com/*
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
@@ -12,15 +12,15 @@
 
 (() => {
   'use strict';
-  if (window.__sidelineCleanTest_v135) return;
-  window.__sidelineCleanTest_v135 = true;
+  if (window.__sidelineCleanTest_v136) return;
+  window.__sidelineCleanTest_v136 = true;
 
-  const VERSION = '1.3.5';
+  const VERSION = '1.3.6';
   const $ = (s, r = document) => { try { return r.querySelector(s); } catch { return null; } };
   const $$ = (s, r = document) => { try { return [...r.querySelectorAll(s)]; } catch { return []; } };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = v => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const helperSelector = '#sh-dock,#sh-queue,#sh-scrub,#sh-qty,#sh-lazy,#sh-expiry,#sh-scrub-warning';
+  const helperSelector = '#sh-dock,#sh-queue,#sh-scrub,#sh-qty,#sh-lazy,#sh-scrub-warning,#sh-expiry-pao-wrap,.sh-exp-controls';
   const state = { owner:'', scrubBusy:false, queueBusy:false, lazyBusy:false, expiryBusy:false };
 
   function visible(el) {
@@ -127,7 +127,7 @@
 .sh-panel{position:fixed;right:14px;bottom:58px;z-index:2147483646;width:460px;max-width:calc(100vw - 28px);box-sizing:border-box;padding:10px;background:#fff;border:1px solid #c7d0dd;box-shadow:0 2px 8px #0003;font:12px Arial,sans-serif;color:#111827}.sh-title{font-weight:800;margin:-10px -10px 8px;padding:9px 10px;background:#f3f5f8;border-bottom:1px solid #d5dbe3}.sh-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.sh-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.sh-input{width:100%;box-sizing:border-box;border:1px solid #b8c2cf;border-radius:3px;padding:8px;font:12px Arial,sans-serif}.sh-area{height:88px;resize:vertical}.sh-status{margin-top:7px;font-weight:700;line-height:1.35}.sh-error{margin-top:4px;color:#b91c1c;font-weight:700}.sh-row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:7px}#sh-qty{left:14px;right:auto;width:332px}.sh-qty-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.sh-qty-grid button{min-height:48px;font-size:17px}.sh-clear-tote{width:100%;margin-top:8px;background:#fff1f2!important;color:#991b1b!important;border-color:#fecaca!important}.sh-stop{background:#fff7ed!important;color:#9a3412!important;border-color:#fed7aa!important}
 #sh-scrub-warning{position:fixed;left:0;right:0;bottom:0;z-index:2147483645;padding:11px 16px;text-align:center;font:900 15px Arial,sans-serif;letter-spacing:.4px;background:#b91c1c;color:#fff;border-top:3px solid #fff;animation:shWarn 1.2s steps(2,end) infinite;pointer-events:none}@keyframes shWarn{0%,100%{background:#b91c1c;color:#fff}50%{background:#fde047;color:#111}}
 .sh-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:8px 0}.sh-metric{border:1px solid #c7d0dd;background:#f8fafc;padding:8px;text-align:center}.sh-metric b{display:block;font-size:26px;line-height:1}.sh-progress{max-height:180px;overflow:auto;border-top:1px solid #d5dbe3;margin-top:8px;padding-top:6px;font-family:Consolas,monospace}.sh-item{padding:4px 6px;border-radius:3px}.sh-item.current{background:#fff3bf;border:1px solid #f59e0b;font-weight:900}
-.sh-exp-inline{margin-top:6px;display:grid;gap:4px}.sh-exp-inline button{padding:4px 3px;font-size:11px}.sh-exp-month{grid-template-columns:repeat(6,1fr)}.sh-exp-day{grid-template-columns:repeat(8,1fr)}.sh-exp-year{grid-template-columns:repeat(4,1fr)}#sh-expiry-pao{width:100%;margin-top:10px;padding:12px;background:#7c3aed!important;color:#fff!important;border-color:#6d28d9!important;font-size:14px}
+.sh-exp-controls{display:grid;gap:6px;margin-top:8px;width:100%;box-sizing:border-box}.sh-exp-controls button{min-height:32px;padding:6px 4px;font-size:13px;line-height:1}.sh-exp-month{grid-template-columns:repeat(4,minmax(0,1fr))}.sh-exp-day{grid-template-columns:repeat(7,minmax(0,1fr))}.sh-exp-year{grid-template-columns:repeat(4,minmax(0,1fr))}#sh-expiry-pao-wrap{margin-top:12px;width:100%}#sh-expiry-pao{width:100%;padding:14px;background:#7c3aed!important;color:#fff!important;border-color:#6d28d9!important;font-size:15px}
 `;
   const style = document.createElement('style'); style.textContent = css; document.documentElement.appendChild(style);
 
@@ -172,29 +172,34 @@
   async function lazyTick(){if(!lazy.running||lazy.recovering||state.lazyBusy||(state.owner&&state.owner!=='lazy'))return;const s=screen();if(s==='PREDICANT'){lazy.predicant=true;lazy.paused=true;lazy.error=`Predicant detected — scan destination ${lazy.dest} again.`;renderLazy();state.owner='';scanInput()?.focus();return;}if(lazy.paused)return;const item=lazy.items[lazy.index];if(!item){state.lazyBusy=true;state.owner='lazy';try{if(lClear.checked&&changeButton()){const result=await clearOpenContainer();if(result!=='closed')throw new Error(result);}resetLazyReady('complete — ready for next round');}catch(e){lazy.paused=true;lazy.error=`Completion cleanup failed: ${e.message}`;renderLazy();state.owner='';}finally{state.lazyBusy=false;}return;}state.lazyBusy=true;state.owner='lazy';try{if(s==='EXPIRY'){lazy.paused=true;lazy.error='Expiry screen detected — use expiry helper, then Resume.';renderLazy();return;}if(lazy.stage==='SOURCE'){if(s==='SOURCE')await fillAndConfirm(lazy.src,'SOURCE');else if(['ITEM','VERIFY','QTY','DEST'].includes(s))lazy.stage='ITEM';}else if(lazy.stage==='ITEM'){if(s==='ITEM'){await fillAndConfirm(item.code,'ITEM');lazy.stage='VERIFY';}else if(s==='VERIFY')lazy.stage='VERIFY';else if(s==='SOURCE')lazy.stage='SOURCE';}else if(lazy.stage==='VERIFY'){if(s==='VERIFY'){const b=confirmButton();if(b)click(b);}else if(s==='QTY')lazy.stage='QTY';else if(s==='DEST')lazy.stage='DEST';}else if(lazy.stage==='QTY'){if(s==='QTY'){const input=scanInput();if(input){input.focus();input.select?.();setValue(input,'');await sleep(10);setValue(input,item.qty);await sleep(20);const b=confirmButton();enabled(b)?click(b):enter(input);}}else if(s==='DEST')lazy.stage='DEST';}else if(lazy.stage==='DEST'){if(s==='DEST'){await fillAndConfirm(lazy.dest,'DEST');lazy.stage='ADVANCE';}}else if(lazy.stage==='ADVANCE'&&['ITEM','SUCCESS','SOURCE'].includes(s)){lazy.index++;lazy.stage=s==='SOURCE'?'SOURCE':'ITEM';lazy.error='';}renderLazy();}catch(e){lazy.error=e.message;lazy.paused=true;renderLazy();}finally{state.lazyBusy=false;if(!lazy.running||lazy.paused)state.owner='';}}
   lazyPanel.onclick=e=>{const a=e.target.dataset.a;if(!a)return;if(a==='start'){lazy.src=lSrc.value.trim();lazy.dest=lDest.value.trim();lazy.items=parseItems(lItems.value);lazy.index=0;lazy.error='';lazy.predicant=false;lazy.recovering=false;if(!validContainer(lazy.src)||!validContainer(lazy.dest)){lazy.error='SRC and DEST must start with csX or tsX.';renderLazy();return;}if(!lazy.items.length){lazy.error='No item barcodes.';renderLazy();return;}lazy.running=true;lazy.paused=false;lazy.stage='SOURCE';renderLazy('started');}if(a==='pause'){if(lazy.predicant||lazy.recovering)return;lazy.paused=!lazy.paused;e.target.textContent=lazy.paused?'Resume':'Pause';if(!lazy.paused){lazy.error='';state.owner='lazy';}else state.owner='';renderLazy();}if(a==='stop'){lazy.running=false;lazy.paused=false;lazy.predicant=false;lazy.recovering=false;lazy.stage='IDLE';state.owner='';renderLazy('stopped');}if(a==='reset')resetLazyReady('reset');};renderLazy();
 
-  let expiryMount=null;
+  let expiryMounts=[];
   function expiryInputs(){const inputs=appElements('input,textarea').filter(visible),hint=re=>inputs.find(el=>re.test(norm(`${el.name||''} ${el.id||''} ${el.placeholder||''} ${el.getAttribute('aria-label')||''}`))),month=hint(/\b(mm|month)\b/),day=hint(/\b(dd|day)\b/),year=hint(/\b(yyyy|year)\b/);if(month&&day&&year)return{month,day,year};const text=inputs.filter(el=>['','text','tel','number','search'].includes(norm(el.type||'')));return text.length>=3?{month:text[0],day:text[1],year:text[2]}:null;}
   function fillExpiryPart(input,value){if(!input)return;input.focus();input.select?.();setValue(input,value);input.dispatchEvent(new Event('blur',{bubbles:true}));}
-  function expiryButtons(values,action,cls){const wrap=document.createElement('div');wrap.className=`sh-exp-inline ${cls}`;for(const v of values){const b=document.createElement('button');b.className='sh-btn';b.dataset.exp=action;b.dataset.v=v;b.textContent=v;wrap.appendChild(b);}return wrap;}
-  function clearExpiryMount(){expiryMount?.remove();expiryMount=null;}
+  function lowestCommonAncestor(elements){let node=elements[0];while(node&&!elements.every(el=>node.contains(el)))node=node.parentElement;return node;}
+  function clearExpiryMount(){for(const el of expiryMounts)el.remove();expiryMounts=[];}
+  function makeExpiryControls(input,values,action,cls){
+    const wrap=document.createElement('div');wrap.className=`sh-exp-controls ${cls}`;
+    for(const value of values){const button=document.createElement('button');button.type='button';button.className='sh-btn';button.dataset.exp=action;button.dataset.v=value;button.textContent=value;wrap.appendChild(button);}
+    const host=input.parentElement || input;
+    host.appendChild(wrap);
+    expiryMounts.push(wrap);
+    return wrap;
+  }
   function mountExpiry(){
-    if(screen()!=='EXPIRY'){clearExpiryMount();return;}
+    if(screen()!=='EXPIRY'){if(expiryMounts.length)clearExpiryMount();return;}
     const inputs=expiryInputs();if(!inputs)return;
-    if(expiryMount?.isConnected && expiryMount.dataset.monthId===String(inputs.month.dataset.shExpiryId||''))return;
+    if(expiryMounts.length&&expiryMounts.every(el=>el.isConnected))return;
     clearExpiryMount();
-    [inputs.month,inputs.day,inputs.year].forEach((input,i)=>{if(!input.dataset.shExpiryId)input.dataset.shExpiryId=`${Date.now()}-${i}`;});
-    const commonParent=inputs.month.parentElement?.parentElement || inputs.month.parentElement || document.body;
-    const row=document.createElement('div');row.id='sh-expiry';row.dataset.monthId=inputs.month.dataset.shExpiryId;row.style.cssText='display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:4px 0 0;';
-    const makeCol=(input,values,action,cls)=>{const col=document.createElement('div');col.appendChild(expiryButtons(values,action,cls));col.dataset.target=action;return col;};
-    row.appendChild(makeCol(inputs.month,Array.from({length:12},(_,i)=>String(i+1).padStart(2,'0')),'m','sh-exp-month'));
-    row.appendChild(makeCol(inputs.day,Array.from({length:31},(_,i)=>String(i+1).padStart(2,'0')),'d','sh-exp-day'));
-    row.appendChild(makeCol(inputs.year,Array.from({length:16},(_,i)=>String(new Date().getFullYear()+i)),'y','sh-exp-year'));
-    const pao=document.createElement('button');pao.id='sh-expiry-pao';pao.className='sh-btn';pao.dataset.exp='pao';pao.textContent='PAO +900 DAYS';
-    const wrap=document.createElement('div');wrap.append(row,pao);
-    const anchor=commonParent.nextElementSibling;
-    commonParent.parentElement?.insertBefore(wrap,anchor);
-    expiryMount=wrap;
-    wrap.addEventListener('click',async e=>{const b=e.target.closest('[data-exp]');if(!b||state.expiryBusy)return;state.expiryBusy=true;try{const a=b.dataset.exp,v=b.dataset.v;if(a==='m')fillExpiryPart(inputs.month,v);if(a==='d')fillExpiryPart(inputs.day,v);if(a==='y'){fillExpiryPart(inputs.year,v);await sleep(40);const c=confirmButton();c?click(c):enter(inputs.year);}if(a==='pao'){const d=new Date();d.setDate(d.getDate()+900);fillExpiryPart(inputs.month,String(d.getMonth()+1).padStart(2,'0'));fillExpiryPart(inputs.day,String(d.getDate()).padStart(2,'0'));fillExpiryPart(inputs.year,String(d.getFullYear()));await sleep(40);const c=confirmButton();c?click(c):enter(inputs.year);}}finally{setTimeout(()=>{state.expiryBusy=false;},150);}});
+    const now=new Date();
+    makeExpiryControls(inputs.month,Array.from({length:12},(_,i)=>String(i+1).padStart(2,'0')),'m','sh-exp-month');
+    makeExpiryControls(inputs.day,Array.from({length:31},(_,i)=>String(i+1).padStart(2,'0')),'d','sh-exp-day');
+    makeExpiryControls(inputs.year,Array.from({length:16},(_,i)=>String(now.getFullYear()+i)),'y','sh-exp-year');
+    const row=lowestCommonAncestor([inputs.month,inputs.day,inputs.year]);
+    const paoWrap=document.createElement('div');paoWrap.id='sh-expiry-pao-wrap';
+    const pao=document.createElement('button');pao.type='button';pao.id='sh-expiry-pao';pao.className='sh-btn';pao.dataset.exp='pao';pao.textContent='PAO +900 DAYS';paoWrap.appendChild(pao);
+    (row?.parentElement||document.body).insertBefore(paoWrap,row?.nextSibling||null);expiryMounts.push(paoWrap);
+    const handle=async e=>{const b=e.target.closest('[data-exp]');if(!b||state.expiryBusy)return;state.expiryBusy=true;try{const a=b.dataset.exp,v=b.dataset.v;if(a==='m')fillExpiryPart(inputs.month,v);if(a==='d')fillExpiryPart(inputs.day,v);if(a==='y'){fillExpiryPart(inputs.year,v);await sleep(40);const c=confirmButton();c?click(c):enter(inputs.year);}if(a==='pao'){const d=new Date();d.setDate(d.getDate()+900);fillExpiryPart(inputs.month,String(d.getMonth()+1).padStart(2,'0'));fillExpiryPart(inputs.day,String(d.getDate()).padStart(2,'0'));fillExpiryPart(inputs.year,String(d.getFullYear()));await sleep(40);const c=confirmButton();c?click(c):enter(inputs.year);}}finally{setTimeout(()=>{state.expiryBusy=false;},150);}};
+    for(const el of expiryMounts)el.addEventListener('click',handle);
   }
 
   function boot(){mountDock();applyPanels();renderScrub();const observer=new MutationObserver(()=>{screenDirty=true;});observer.observe(document.body,{subtree:true,childList:true,characterData:true,attributes:true,attributeFilter:['hidden','style','class','aria-hidden']});setInterval(()=>{screenDirty=true;},1000);setInterval(scrubTick,120);setInterval(lazyTick,140);setInterval(mountExpiry,300);}
