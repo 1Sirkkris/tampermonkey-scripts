@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         v1.8.37 Multiprint + Pandash
+// @name         v1.8.37 DEPRECIATED Multiprint + Pandash
 // @version      1.8.37
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Multiprint_Pandash.user.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Multiprint_Pandash.user.js
