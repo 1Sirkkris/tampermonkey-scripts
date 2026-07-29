@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v0.1.0 FCResearch Master CLEAN TEST
+// @name         v0.1.2 FCResearch Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.0
+// @version      0.1.2
 // @description  CLEAN TEST merging Multiprint + PanDash with Highlighter + Madcat + Sideline Size. Existing scripts remain untouched.
 // @include      /^https?:\/\/.*fcresearch.*\//
 // @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
@@ -18,10 +18,10 @@
 (() => {
   'use strict';
 
-  if (window.__fcrMasterCleanTest_v010) return;
-  window.__fcrMasterCleanTest_v010 = true;
+  if (window.__fcrMasterCleanTest_v012) return;
+  window.__fcrMasterCleanTest_v012 = true;
 
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.2';
   const UI_ATTR = 'data-fcr-master-ui';
   const UI_SELECTOR = `[${UI_ATTR}]`;
   const MARKETPLACE = 'AU';
