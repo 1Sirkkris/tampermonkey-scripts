@@ -1,20 +1,26 @@
 // ==UserScript==
-// @name         v0.1.0 AFT Tools Master CLEAN TEST
+// @name         v0.2.0 AFT Tools Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.0
-// @description  Clean AFT master: MoveItems quantity auto-enter + FcSku Multi Quick Flip. Shared core, no dead modules.
-// @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/moveitems*
-// @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/moveitems*
-// @match        http://aft-qt-*.aka.*.corp.amazon.com/app/moveitems*
-// @match        https://aft-qt-*.aka.*.corp.amazon.com/app/moveitems*
-// @match        http://aft-qt-*.corp.amazon.com/app/moveitems*
-// @match        https://aft-qt-*.corp.amazon.com/app/moveitems*
+// @version      0.2.0
+// @description  Clean AFT master for EditItems Each/Sku, FcSku Flip and MoveItems. Shared core only; no dead/hidden legacy engines.
+// @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
+// @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
+// @match        http://aft-qt-*.aka.*.corp.amazon.com/app/edititems*
+// @match        https://aft-qt-*.aka.*.corp.amazon.com/app/edititems*
+// @match        http://aft-qt-*.corp.amazon.com/app/edititems*
+// @match        https://aft-qt-*.corp.amazon.com/app/edititems*
 // @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/fcskuflip*
 // @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/fcskuflip*
 // @match        http://aft-qt-*.aka.*.corp.amazon.com/app/fcskuflip*
 // @match        https://aft-qt-*.aka.*.corp.amazon.com/app/fcskuflip*
 // @match        http://aft-qt-*.corp.amazon.com/app/fcskuflip*
 // @match        https://aft-qt-*.corp.amazon.com/app/fcskuflip*
+// @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/moveitems*
+// @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/moveitems*
+// @match        http://aft-qt-*.aka.*.corp.amazon.com/app/moveitems*
+// @match        https://aft-qt-*.aka.*.corp.amazon.com/app/moveitems*
+// @match        http://aft-qt-*.corp.amazon.com/app/moveitems*
+// @match        https://aft-qt-*.corp.amazon.com/app/moveitems*
 // @run-at       document-start
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/AFT_Tools_Master_CLEAN_TEST.user.js
@@ -24,604 +30,178 @@
 (() => {
   'use strict';
 
-  if (window.__AFT_TOOLS_MASTER_CLEAN_TEST_V010__) return;
-  window.__AFT_TOOLS_MASTER_CLEAN_TEST_V010__ = true;
+  if (window.__AFT_MASTER_V020__) return;
+  window.__AFT_MASTER_V020__ = true;
 
-  const VERSION = '0.1.0';
-  const MODULES = [];
-  let routeTimer = 0;
-  let observer = null;
+  const VERSION = '0.2.0';
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const norm = v => String(v ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  const low = v => norm(v).toLowerCase();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  const norm = value => String(value ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
-  const lower = value => norm(value).toLowerCase();
-  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-  function visible(element) {
-    if (!element || !element.isConnected || element.disabled) return false;
-    const rect = element.getBoundingClientRect();
-    const style = getComputedStyle(element);
-    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+  function visible(el) {
+    if (!el || !el.isConnected || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
   }
 
-  function setNativeValue(element, value) {
-    if (!element) return false;
-    const proto = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
-    element.focus();
-    if (descriptor?.set) descriptor.set.call(element, String(value));
-    else element.value = String(value);
-    element.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      cancelable: true,
-      inputType: 'insertText',
-      data: String(value)
-    }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+  function pageText() { return norm(document.body?.innerText || ''); }
+  function heading() { return norm($$('h1,h2,h3,[role="heading"]').map(x => x.textContent).find(Boolean) || ''); }
+
+  function setValue(el, value) {
+    if (!el) return false;
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const d = Object.getOwnPropertyDescriptor(proto, 'value');
+    el.focus();
+    if (d?.set) d.set.call(el, String(value)); else el.value = String(value);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: String(value) }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   }
 
-  function pressKey(target, key) {
-    const code = key === 'Enter' ? 'Enter' : `Key${String(key).toUpperCase()}`;
-    const keyCode = key === 'Enter' ? 13 : String(key).toUpperCase().charCodeAt(0);
-    for (const type of ['keydown', 'keypress', 'keyup']) {
-      (target || document).dispatchEvent(new KeyboardEvent(type, {
-        key, code, keyCode, which: keyCode, charCode: keyCode,
-        bubbles: true, cancelable: true, composed: true
-      }));
+  function press(target, key) {
+    const code = key === 'Enter' ? 'Enter' : `Key${key.toUpperCase()}`;
+    const n = key === 'Enter' ? 13 : key.toUpperCase().charCodeAt(0);
+    for (const type of ['keydown','keypress','keyup']) {
+      (target || document).dispatchEvent(new KeyboardEvent(type, { key, code, keyCode:n, which:n, bubbles:true, cancelable:true }));
     }
   }
 
-  function pageText() {
-    return norm(document.body?.innerText || '');
+  function textInput(exclude = '') {
+    return $$('input[type="text"],input:not([type]),textarea').filter(visible).find(el => !exclude || !el.closest(exclude)) || null;
   }
 
-  function headingText() {
-    const headings = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')];
-    return norm(headings.map(node => node.textContent).find(Boolean) || '');
-  }
-
-  function visibleTextInput(excludeSelector = '') {
-    return [...document.querySelectorAll('input[type="text"],input:not([type]),textarea')]
+  function button(words, exclude = '') {
+    const wanted = words.map(low);
+    return $$('button,input[type="button"],input[type="submit"],a,[role="button"],span.a-button,div.a-button')
       .filter(visible)
-      .find(element => !excludeSelector || !element.closest(excludeSelector)) || null;
-  }
-
-  function findButton(parts, excludeSelector = '') {
-    const wanted = parts.map(lower);
-    return [...document.querySelectorAll('button,input[type="button"],input[type="submit"],a,[role="button"],span.a-button,div.a-button')]
-      .filter(visible)
-      .filter(element => !excludeSelector || !element.closest(excludeSelector))
-      .find(element => {
-        const text = lower(element.textContent || element.value || element.getAttribute('aria-label'));
-        return text && wanted.some(part => text.includes(part));
+      .filter(el => !exclude || !el.closest(exclude))
+      .find(el => {
+        const t = low(el.textContent || el.value || el.getAttribute('aria-label'));
+        return t && wanted.some(w => t.includes(w));
       }) || null;
   }
 
-  function clickButton(parts, excludeSelector = '') {
-    const node = findButton(parts, excludeSelector);
-    if (!node) return false;
-    const real = node.querySelector?.('input.a-button-input,input[type="submit"],button') || node;
+  function click(words, exclude = '') {
+    const n = button(words, exclude);
+    if (!n) return false;
+    const real = n.querySelector?.('input.a-button-input,input[type="submit"],button') || n;
     if (!visible(real)) return false;
-    real.scrollIntoView?.({ block: 'center', inline: 'center' });
+    real.scrollIntoView?.({ block:'center', inline:'center' });
     real.click();
     return true;
   }
 
-  async function waitFor(check, timeout = 12000, interval = 80) {
-    const started = Date.now();
-    while (Date.now() - started < timeout) {
-      try {
-        const result = check();
-        if (result) return result;
-      } catch {}
-      await sleep(interval);
+  async function waitFor(fn, timeout = 12000, every = 80, tokenFn = null, token = null) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (tokenFn && tokenFn() !== token) return null;
+      try { const v = fn(); if (v) return v; } catch {}
+      await sleep(every);
     }
     return null;
   }
 
-  function route() {
-    clearTimeout(routeTimer);
-    routeTimer = window.setTimeout(() => {
-      for (const module of MODULES) {
-        const matches = module.match();
-        if (matches && !module.active) {
-          module.active = true;
-          module.start();
-        } else if (!matches && module.active) {
-          module.active = false;
-          module.stop?.();
-        } else if (matches) {
-          module.refresh?.();
-        }
+  function radioByText(wanted) {
+    const w = low(wanted);
+    for (const r of $$('input[type="radio"]')) {
+      const value = low(r.value).replace(/_/g,' ');
+      let node = r, text = '';
+      for (let i=0; i<7 && node; i++, node=node.parentElement) {
+        const radios = node.querySelectorAll?.('input[type="radio"]').length || 0;
+        if (radios === 1) { text = low(node.textContent); if (text) break; }
       }
-    }, 80);
+      if (value === w || text === w || text.startsWith(w + ' ') || text.includes(w + ' (quantity:')) return r;
+    }
+    return null;
   }
 
-  function startRouter() {
-    if (observer) return;
-    observer = new MutationObserver(route);
-    observer.observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      characterData: true
-    });
-    window.addEventListener('hashchange', route, true);
-    window.addEventListener('popstate', route, true);
-    window.addEventListener('focus', route, true);
-    route();
+  function chooseRadio(label) {
+    const r = radioByText(label);
+    if (!r) return false;
+    r.scrollIntoView?.({ block:'center' });
+    r.click();
+    r.dispatchEvent(new Event('input',{bubbles:true}));
+    r.dispatchEvent(new Event('change',{bubbles:true}));
+    return true;
+  }
+
+  function injectCss() {
+    if ($('#aft-master-style')) return;
+    const s = document.createElement('style');
+    s.id = 'aft-master-style';
+    s.textContent = `.aftm-panel{position:fixed;right:12px;bottom:12px;z-index:2147483647;width:330px;background:#111827;color:#fff;border-radius:10px;box-shadow:0 8px 24px #0006;font:12px/1.35 Arial,sans-serif;overflow:hidden}.aftm-head{padding:8px 10px;background:#002e36;font-weight:800;cursor:pointer}.aftm-body{padding:10px;display:grid;gap:8px}.aftm-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.aftm-panel input,.aftm-panel textarea,.aftm-panel select{box-sizing:border-box;width:100%;padding:6px;border-radius:6px;border:1px solid #64748b;background:#fff;color:#111}.aftm-panel button{padding:6px 9px;border-radius:6px;border:1px solid #64748b;cursor:pointer;font-weight:700}.aftm-row{display:flex;gap:6px}.aftm-row>*{flex:1}.aftm-status{min-height:16px;font-weight:700}.aftm-danger{background:#7f1d1d;color:#fff}.aftm-primary{background:#002e36;color:#fff}`;
+    document.documentElement.appendChild(s);
+  }
+
+  class Panel {
+    constructor(id, title, html) {
+      injectCss(); this.id = id; this.el = document.createElement('section'); this.el.id = id; this.el.className = 'aftm-panel';
+      this.el.innerHTML = `<div class="aftm-head">${title} v${VERSION} ▴</div><div class="aftm-body">${html}</div>`;
+      (document.body || document.documentElement).appendChild(this.el);
+      const head = $('.aftm-head', this.el), body = $('.aftm-body', this.el);
+      head.onclick = () => { const open = body.style.display !== 'none'; body.style.display = open ? 'none' : 'grid'; head.textContent = `${title} v${VERSION} ${open ? '▾' : '▴'}`; };
+    }
+    q(s) { return $(s, this.el); }
+    remove() { this.el.remove(); }
   }
 
   const MoveItems = {
-    active: false,
-    running: false,
-    lastKey: '',
-    lastAt: 0,
-
-    match() {
-      return /\/app\/moveitems/i.test(location.pathname);
-    },
-
-    start() {
-      this.refresh();
-    },
-
-    stop() {
-      this.running = false;
-    },
-
-    quantityPage() {
-      return /enter quantity/i.test(pageText());
-    },
-
-    quantityValue() {
-      const matches = [...pageText().matchAll(/\bQuantity:\s*([0-9]{1,4})\b/gi)]
-        .map(match => Number(match[1]))
-        .filter(value => Number.isInteger(value) && value > 0);
-      return matches.at(-1) || null;
-    },
-
-    quantityInput() {
-      const inputs = [...document.querySelectorAll('input')]
-        .filter(visible)
-        .filter(input => ['', 'text', 'number', 'tel', 'search'].includes(lower(input.type)));
-
-      if (inputs.includes(document.activeElement)) return document.activeElement;
-
-      return inputs.find(input => {
-        const hint = [
-          input.getAttribute('aria-label'),
-          input.getAttribute('placeholder'),
-          input.name,
-          input.id
-        ].map(norm).join(' ');
-        return /quantity|qty/i.test(hint);
-      }) || inputs[0] || null;
-    },
-
-    async refresh() {
-      if (!this.active || this.running || !this.quantityPage()) return;
-
-      const quantity = this.quantityValue();
-      const input = this.quantityInput();
-      if (!quantity || !input) return;
-
-      const key = `${location.href}|${quantity}|${pageText().slice(0, 260)}`;
-      const now = Date.now();
-      if (key === this.lastKey && now - this.lastAt < 3000) return;
-
-      this.lastKey = key;
-      this.lastAt = now;
-      this.running = true;
-
-      try {
-        setNativeValue(input, quantity);
-        await sleep(100);
-        input.dispatchEvent(new Event('blur', { bubbles: true }));
-        input.focus();
-        pressKey(input, 'Enter');
-
-        await sleep(100);
-        clickButton(['continue', 'enter']);
-
-        await sleep(180);
-        if (this.quantityPage()) clickButton(['continue', 'enter']);
-      } finally {
-        this.running = false;
-      }
+    active:false, busy:false, lastKey:'', lastAt:0,
+    match:()=>/\/app\/moveitems/i.test(location.pathname), start(){ this.refresh(); }, stop(){ this.busy=false; },
+    refresh: async function() {
+      if (!this.active || this.busy || !/enter quantity/i.test(pageText())) return;
+      const qty = [...pageText().matchAll(/\bQuantity:\s*([0-9]{1,5})\b/gi)].map(m=>+m[1]).filter(n=>n>0).at(-1);
+      const input = $$('input').filter(visible).find(i=>/quantity|qty/i.test([i.id,i.name,i.placeholder,i.getAttribute('aria-label')].map(norm).join(' '))) || $$('input').filter(visible)[0];
+      if (!qty || !input) return;
+      const key = `${location.href}|${qty}|${pageText().slice(0,240)}`;
+      if (key===this.lastKey && Date.now()-this.lastAt<3000) return;
+      this.lastKey=key; this.lastAt=Date.now(); this.busy=true;
+      try { setValue(input, qty); await sleep(100); press(input,'Enter'); await sleep(120); if (/enter quantity/i.test(pageText())) click(['continue','enter']); }
+      finally { this.busy=false; }
     }
   };
 
   const FcSku = {
-    active: false,
-    running: false,
-    abortToken: 0,
-    panel: null,
-    statusNode: null,
-
-    keys: {
-      old: 'aft_master_fcsku_old',
-      next: 'aft_master_fcsku_new',
-      text: 'aft_master_fcsku_locations_text',
-      queue: 'aft_master_fcsku_queue',
-      active: 'aft_master_fcsku_active',
-      total: 'aft_master_fcsku_total',
-      done: 'aft_master_fcsku_done',
-      mode: 'aft_master_fcsku_mode',
-      open: 'aft_master_fcsku_open'
+    active:false, running:false, token:0, panel:null,
+    k:{old:'aftm_fc_old',next:'aftm_fc_new',loc:'aftm_fc_loc',queue:'aftm_fc_q',done:'aftm_fc_done',total:'aftm_fc_total',active:'aftm_fc_active'},
+    match:()=>/\/app\/fcskuflip/i.test(location.pathname),
+    start(){ this.ensure(); this.resume(); }, stop(){ this.token++; this.running=false; this.panel?.remove(); this.panel=null; },
+    ensure(){
+      if (this.panel?.el.isConnected || !document.body) return;
+      this.panel = new Panel('aftm-fcsku','FcSku Multi Flip',`<label>Old FNSKU/FCSKU<input data-old></label><label>New FNSKU/FCSKU<input data-new></label><label>Containers / locations<textarea data-loc rows="6"></textarea></label><div class="aftm-row"><button data-start class="aftm-primary">START</button><button data-stop>STOP</button><button data-clear class="aftm-danger">CLEAR</button></div><div class="aftm-status" data-status>Idle</div>`);
+      this.panel.q('[data-old]').value=localStorage.getItem(this.k.old)||''; this.panel.q('[data-new]').value=localStorage.getItem(this.k.next)||''; this.panel.q('[data-loc]').value=localStorage.getItem(this.k.loc)||'';
+      this.panel.q('[data-start]').onclick=()=>this.startRun(); this.panel.q('[data-stop]').onclick=()=>{this.token++;this.running=false;this.status('Stopped');}; this.panel.q('[data-clear]').onclick=()=>this.clear();
+      ['[data-old]','[data-new]','[data-loc]'].forEach(s=>this.panel.q(s).addEventListener('input',()=>this.saveFields())); this.update();
     },
-
-    modes: {
-      safe: 700,
-      normal: 500,
-      aggressive: 350
-    },
-
-    match() {
-      return /\/app\/fcskuflip/i.test(location.pathname);
-    },
-
-    start() {
-      this.ensurePanel();
-      this.refresh();
-    },
-
-    stop() {
-      this.abortToken++;
-      this.running = false;
-      this.panel?.remove();
-      this.panel = null;
-    },
-
-    getMode() {
-      const value = localStorage.getItem(this.keys.mode);
-      return this.modes[value] ? value : 'aggressive';
-    },
-
-    getDelay() {
-      return this.modes[this.getMode()];
-    },
-
-    setMode(mode) {
-      localStorage.setItem(this.keys.mode, this.modes[mode] ? mode : 'normal');
-      this.updatePanel();
-    },
-
-    readQueue() {
-      try {
-        const value = JSON.parse(localStorage.getItem(this.keys.queue) || '[]');
-        return Array.isArray(value) ? value : [];
-      } catch {
-        return [];
-      }
-    },
-
-    saveQueue(queue) {
-      localStorage.setItem(this.keys.queue, JSON.stringify(queue));
-      this.updatePanel();
-    },
-
-    pageKind() {
-      const heading = lower(headingText());
-      const text = lower(pageText());
-
-      if (text.includes('success') && text.includes('start over')) return 'success';
-      if (/^success$/i.test(headingText())) return 'success';
-      if (heading.includes('scan container') || text.includes('scan container')) return 'container';
-      if (heading.includes('enter new fnsku') || heading.includes('enter new fcsku') ||
-          text.includes('enter new fnsku') || text.includes('enter new fcsku')) return 'new';
-      if (heading.includes('input item') || text.includes('fnskus, fcskus, and lpns are supported')) return 'old';
-      if (heading.includes('confirm flip') || text.includes('confirm flip')) return 'confirm';
-      return 'unknown';
-    },
-
-    currentFields() {
-      if (!this.panel) return null;
-      return {
-        old: this.panel.querySelector('[data-aft-old]'),
-        next: this.panel.querySelector('[data-aft-new]'),
-        locations: this.panel.querySelector('[data-aft-locations]')
-      };
-    },
-
-    saveFields() {
-      const fields = this.currentFields();
-      if (!fields) return;
-      localStorage.setItem(this.keys.old, norm(fields.old.value));
-      localStorage.setItem(this.keys.next, norm(fields.next.value));
-      localStorage.setItem(this.keys.text, fields.locations.value);
-    },
-
-    buildQueue() {
-      const fields = this.currentFields();
-      if (!fields) return false;
-
-      const oldCode = norm(fields.old.value);
-      const newCode = norm(fields.next.value);
-      const queue = fields.locations.value
-        .split(/\r?\n/)
-        .map(norm)
-        .filter(Boolean);
-
-      if (!oldCode || !newCode || !queue.length) {
-        this.status('Need old, new and at least one container');
-        return false;
-      }
-
-      this.saveFields();
-      this.saveQueue(queue);
-      localStorage.setItem(this.keys.total, String(queue.length));
-      localStorage.setItem(this.keys.done, '0');
-      localStorage.setItem(this.keys.active, '1');
-      return true;
-    },
-
-    clearRun(message = 'Idle') {
-      this.abortToken++;
-      this.running = false;
-      localStorage.removeItem(this.keys.queue);
-      localStorage.removeItem(this.keys.active);
-      localStorage.removeItem(this.keys.total);
-      localStorage.removeItem(this.keys.done);
-      this.status(message);
-      this.updatePanel();
-    },
-
-    ensurePanel() {
-      if (this.panel?.isConnected) return;
-      if (!document.body) return;
-
-      const panel = document.createElement('section');
-      panel.id = 'aft-master-fcsku-panel';
-      panel.style.cssText = `
-        position:fixed; top:86px; left:10px; z-index:2147483647;
-        width:290px; font:12px/1.35 Arial,sans-serif;
-        border-radius:7px; overflow:hidden; background:#f9f9f9;
-        box-shadow:0 2px 9px rgba(0,0,0,.30);
-      `;
-
-      panel.innerHTML = `
-        <header data-aft-toggle style="background:#002e36;color:#fff;padding:8px 10px;font-weight:800;cursor:pointer">
-          AFT Multi Quick Flip v${VERSION} ▴
-        </header>
-        <div data-aft-body style="border:1px solid #002e36;border-top:0;padding:9px">
-          <label style="display:block;margin-bottom:7px">Old FNSKU/FCSKU
-            <input data-aft-old type="text" style="box-sizing:border-box;width:100%;padding:6px;margin-top:3px">
-          </label>
-          <label style="display:block;margin-bottom:7px">New FNSKU/FCSKU
-            <input data-aft-new type="text" style="box-sizing:border-box;width:100%;padding:6px;margin-top:3px">
-          </label>
-          <label style="display:block;margin-bottom:7px">Containers / locations
-            <textarea data-aft-locations rows="7" style="box-sizing:border-box;width:100%;padding:6px;margin-top:3px;resize:vertical"></textarea>
-          </label>
-          <div data-aft-modes style="display:flex;gap:5px;margin-bottom:7px">
-            <button type="button" data-mode="safe">Safe</button>
-            <button type="button" data-mode="normal">Normal</button>
-            <button type="button" data-mode="aggressive">Aggressive</button>
-          </div>
-          <div style="display:flex;gap:6px">
-            <button type="button" data-aft-start style="flex:1;background:#002e36;color:#fff;font-weight:800">START</button>
-            <button type="button" data-aft-stop>STOP</button>
-            <button type="button" data-aft-clear>CLEAR</button>
-          </div>
-          <div data-aft-status style="margin-top:8px;min-height:16px;font-weight:700">Idle</div>
-        </div>
-      `;
-
-      document.body.appendChild(panel);
-      this.panel = panel;
-      this.statusNode = panel.querySelector('[data-aft-status]');
-
-      const fields = this.currentFields();
-      fields.old.value = localStorage.getItem(this.keys.old) || '';
-      fields.next.value = localStorage.getItem(this.keys.next) || '';
-      fields.locations.value = localStorage.getItem(this.keys.text) || '';
-
-      for (const field of Object.values(fields)) field.addEventListener('input', () => this.saveFields());
-
-      panel.querySelector('[data-aft-toggle]').addEventListener('click', () => {
-        const body = panel.querySelector('[data-aft-body]');
-        const open = body.style.display !== 'none';
-        body.style.display = open ? 'none' : 'block';
-        panel.querySelector('[data-aft-toggle]').textContent =
-          `AFT Multi Quick Flip v${VERSION} ${open ? '▾' : '▴'}`;
-        localStorage.setItem(this.keys.open, open ? '0' : '1');
-      });
-
-      panel.querySelectorAll('[data-mode]').forEach(button => {
-        button.addEventListener('click', () => this.setMode(button.dataset.mode));
-      });
-
-      panel.querySelector('[data-aft-start]').addEventListener('click', () => {
-        if (!this.buildQueue()) return;
-        this.status('Starting…');
-        this.drive();
-      });
-
-      panel.querySelector('[data-aft-stop]').addEventListener('click', () => {
-        this.abortToken++;
-        this.running = false;
-        localStorage.removeItem(this.keys.active);
-        this.status('Stopped — queue kept');
-      });
-
-      panel.querySelector('[data-aft-clear]').addEventListener('click', () => this.clearRun('Queue cleared'));
-
-      if (localStorage.getItem(this.keys.open) === '0') {
-        panel.querySelector('[data-aft-body]').style.display = 'none';
-        panel.querySelector('[data-aft-toggle]').textContent = `AFT Multi Quick Flip v${VERSION} ▾`;
-      }
-
-      this.updatePanel();
-
-      if (localStorage.getItem(this.keys.active) === '1' && this.readQueue().length) {
-        this.status('Resuming…');
-        this.drive();
-      }
-    },
-
-    updatePanel() {
-      if (!this.panel) return;
-      const mode = this.getMode();
-      this.panel.querySelectorAll('[data-mode]').forEach(button => {
-        const active = button.dataset.mode === mode;
-        button.style.background = active ? '#002e36' : '#eee';
-        button.style.color = active ? '#fff' : '#111';
-        button.style.fontWeight = active ? '800' : '400';
-      });
-
-      const queue = this.readQueue();
-      const total = Number(localStorage.getItem(this.keys.total)) || queue.length;
-      const done = Number(localStorage.getItem(this.keys.done)) || 0;
-      if (localStorage.getItem(this.keys.active) === '1') {
-        this.status(`${done}/${total} complete • ${queue.length} remaining • ${mode}`);
-      }
-    },
-
-    status(message) {
-      if (this.statusNode) this.statusNode.textContent = message;
-    },
-
-    async inputAndEnter(value, expectedKind, token) {
-      const input = await waitFor(() => {
-        if (token !== this.abortToken) return null;
-        if (expectedKind && this.pageKind() !== expectedKind) return null;
-        return visibleTextInput('#aft-master-fcsku-panel');
-      }, 12000, 80);
-
-      if (!input || token !== this.abortToken) return false;
-      setNativeValue(input, value);
-      await sleep(70);
-      pressKey(input, 'Enter');
-      return true;
-    },
-
-    async waitForNextKind(previous, token, timeout = 12000) {
-      return await waitFor(() => {
-        if (token !== this.abortToken) return null;
-        const kind = this.pageKind();
-        return kind !== previous && kind !== 'unknown' ? kind : null;
-      }, timeout, 80);
-    },
-
-    async startOver(token) {
-      if (token !== this.abortToken) return false;
-
-      if (clickButton(['start over'], '#aft-master-fcsku-panel')) return true;
-      pressKey(document, 'r');
-      return true;
-    },
-
-    async processOne(container, oldCode, newCode, token) {
-      const delay = this.getDelay();
-
-      let kind = this.pageKind();
-      if (kind === 'success') {
-        await this.startOver(token);
-        await sleep(delay);
-        kind = await waitFor(() => this.pageKind() === 'container' ? 'container' : null, 10000, 80);
-      }
-
-      if (kind !== 'container') {
-        const ready = await waitFor(() => this.pageKind() === 'container' ? true : null, 12000, 80);
-        if (!ready) throw new Error('Container screen not found');
-      }
-
-      this.status(`Container: ${container}`);
-      if (!await this.inputAndEnter(container, 'container', token)) throw new Error('Container entry failed');
-      await sleep(delay);
-      if (!await this.waitForNextKind('container', token)) throw new Error('Old SKU screen not found');
-
-      this.status(`Old: ${oldCode}`);
-      if (!await this.inputAndEnter(oldCode, 'old', token)) throw new Error('Old SKU entry failed');
-      await sleep(delay);
-      if (!await this.waitForNextKind('old', token)) throw new Error('New SKU screen not found');
-
-      this.status(`New: ${newCode}`);
-      if (!await this.inputAndEnter(newCode, 'new', token)) throw new Error('New SKU entry failed');
-      await sleep(delay);
-
-      const confirmReady = await waitFor(() => this.pageKind() === 'confirm' ? true : null, 12000, 80);
-      if (!confirmReady) throw new Error('Confirm screen not found');
-
-      this.status('Confirming…');
-      if (!clickButton(['confirm flip', 'confirm', 'continue'], '#aft-master-fcsku-panel')) {
-        pressKey(document, 'Enter');
-      }
-
-      const finished = await waitFor(() => {
-        if (token !== this.abortToken) return null;
-        const next = this.pageKind();
-        return next === 'success' || next === 'old' || next === 'container' ? next : null;
-      }, 12000, 80);
-
-      if (!finished) throw new Error('Success not detected');
-      await this.startOver(token);
-      await sleep(delay);
-      return true;
-    },
-
-    async drive() {
-      if (!this.active || this.running) return;
-      const queue = this.readQueue();
-      if (!queue.length || localStorage.getItem(this.keys.active) !== '1') return;
-
-      const oldCode = norm(localStorage.getItem(this.keys.old));
-      const newCode = norm(localStorage.getItem(this.keys.next));
-      if (!oldCode || !newCode) {
-        this.clearRun('Missing old/new SKU');
-        return;
-      }
-
-      this.running = true;
-      const token = ++this.abortToken;
-
-      try {
-        while (token === this.abortToken && localStorage.getItem(this.keys.active) === '1') {
-          const currentQueue = this.readQueue();
-          if (!currentQueue.length) {
-            localStorage.removeItem(this.keys.active);
-            this.status('Complete');
-            this.updatePanel();
-            break;
-          }
-
-          const container = currentQueue[0];
-          try {
-            await this.processOne(container, oldCode, newCode, token);
-          } catch (error) {
-            if (token !== this.abortToken) break;
-            this.status(`Stopped: ${error.message || error}`);
-            localStorage.removeItem(this.keys.active);
-            break;
-          }
-
-          currentQueue.shift();
-          this.saveQueue(currentQueue);
-          const done = (Number(localStorage.getItem(this.keys.done)) || 0) + 1;
-          localStorage.setItem(this.keys.done, String(done));
-          this.updatePanel();
-        }
-      } finally {
-        if (token === this.abortToken) this.running = false;
-      }
-    },
-
-    refresh() {
-      if (!this.active) return;
-      this.ensurePanel();
-      if (!this.running && localStorage.getItem(this.keys.active) === '1' && this.readQueue().length) {
-        this.drive();
-      }
-    }
+    saveFields(){localStorage.setItem(this.k.old,norm(this.panel.q('[data-old]').value));localStorage.setItem(this.k.next,norm(this.panel.q('[data-new]').value));localStorage.setItem(this.k.loc,this.panel.q('[data-loc]').value);},
+    queue(){try{return JSON.parse(localStorage.getItem(this.k.queue)||'[]')}catch{return[]}}, saveQueue(q){localStorage.setItem(this.k.queue,JSON.stringify(q));this.update()},
+    status(t){if(this.panel)this.panel.q('[data-status]').textContent=t}, update(){const q=this.queue(),d=+(localStorage.getItem(this.k.done)||0),t=+(localStorage.getItem(this.k.total)||0);this.status(localStorage.getItem(this.k.active)==='1'?`${d}/${t} complete • ${q.length} remaining`:'Idle')},
+    clear(){this.token++;this.running=false;[this.k.queue,this.k.done,this.k.total,this.k.active].forEach(k=>localStorage.removeItem(k));this.status('Queue cleared')},
+    startRun(){this.saveFields();const old=localStorage.getItem(this.k.old),next=localStorage.getItem(this.k.next),q=this.panel.q('[data-loc]').value.split(/\r?\n/).map(norm).filter(Boolean);if(!old||!next||!q.length){this.status('Need old, new and container list');return}this.saveQueue(q);localStorage.setItem(this.k.done,'0');localStorage.setItem(this.k.total,String(q.length));localStorage.setItem(this.k.active,'1');this.drive();},
+    resume(){if(localStorage.getItem(this.k.active)==='1'&&this.queue().length)this.drive()},
+    kind(){const h=low(heading()),t=low(pageText());if((t.includes('success')&&t.includes('start over'))||h==='success')return'success';if(h.includes('scan container')||t.includes('scan container'))return'container';if(h.includes('enter new fnsku')||h.includes('enter new fcsku')||t.includes('enter new fnsku')||t.includes('enter new fcsku'))return'new';if(h.includes('input item')||t.includes('fnskus, fcskus, and lpns are supported'))return'old';if(h.includes('confirm flip')||t.includes('confirm flip'))return'confirm';return'unknown';},
+    async drive(){if(this.running)return;this.running=true;const tok=++this.token;try{while(this.active&&localStorage.getItem(this.k.active)==='1'&&this.token===tok){const q=this.queue();if(!q.length){this.clear();this.status('Complete');break}const old=localStorage.getItem(this.k.old),next=localStorage.getItem(this.k.next),loc=q[0],k=this.kind();this.status(`${k} • ${q.length} remaining`);if(k==='old'){const i=await waitFor(()=>textInput('#aftm-fcsku'),10000,80,()=>this.token,tok);if(!i)break;setValue(i,old);press(i,'Enter')}else if(k==='new'){const i=await waitFor(()=>textInput('#aftm-fcsku'),10000,80,()=>this.token,tok);if(!i)break;setValue(i,next);press(i,'Enter')}else if(k==='container'){const i=await waitFor(()=>textInput('#aftm-fcsku'),10000,80,()=>this.token,tok);if(!i)break;setValue(i,loc);press(i,'Enter')}else if(k==='confirm'){if(!click(['confirm'],'#aftm-fcsku'))press(document,'Enter')}else if(k==='success'){click(['start over'],'#aftm-fcsku')||press(document,'r');q.shift();this.saveQueue(q);localStorage.setItem(this.k.done,String(+(localStorage.getItem(this.k.done)||0)+1));}await sleep(350);}}finally{this.running=false;this.update()}}
   };
 
-  MODULES.push(MoveItems, FcSku);
+  const EditItems = {
+    active:false,running:false,token:0,panel:null,mode:null,
+    k:{queue:'aftm_edit_q',active:'aftm_edit_active',done:'aftm_edit_done',total:'aftm_edit_total',state:'aftm_edit_state',disp:'aftm_edit_disp',sku:'aftm_edit_sku'},
+    match:()=>/\/app\/edititems/i.test(location.pathname), detect(){const t=pageText();if(/\bMode\s*:\s*Each\b/i.test(t))return'each';if(/\bMode\s*:\s*Sku\b/i.test(t))return'sku';return null},
+    start(){this.ensure();this.refresh()},stop(){this.token++;this.running=false;this.panel?.remove();this.panel=null},
+    refresh(){const m=this.detect();if(!m)return;this.mode=m;this.ensure();this.panel.q('[data-mode]').textContent=m==='each'?'EACH • Pending Quick Flip':'SKU • EditItems Loop';if(localStorage.getItem(this.k.active)==='1'&&!this.running)this.drive()},
+    ensure(){if(this.panel?.el.isConnected||!document.body)return;this.panel=new Panel('aftm-edit','EditItems',`<div data-mode>Detecting mode…</div><label>SKU / ASIN / FNSKU / FCSKU<input data-sku></label><label>Locations / containers / items<textarea data-list rows="6"></textarea></label><div class="aftm-grid"><label>Desired state<select data-state><option>Sellable</option><option selected>Unsellable</option><option>Pending Research</option></select></label><label>Desired damage<select data-disp><option>Amazon Damage</option><option>Defective</option><option>Distributor Damage</option><option>Expired</option></select></label></div><div class="aftm-row"><button data-start class="aftm-primary">START</button><button data-stop>STOP</button><button data-clear class="aftm-danger">CLEAR QUEUE</button></div><div class="aftm-status" data-status>Idle</div>`);this.panel.q('[data-sku]').value=localStorage.getItem(this.k.sku)||'';this.panel.q('[data-state]').value=localStorage.getItem(this.k.state)||'Unsellable';this.panel.q('[data-disp]').value=localStorage.getItem(this.k.disp)||'Amazon Damage';this.panel.q('[data-start]').onclick=()=>this.startRun();this.panel.q('[data-stop]').onclick=()=>{this.token++;this.running=false;this.status('Stopped')};this.panel.q('[data-clear]').onclick=()=>this.clear();},
+    status(t){if(this.panel)this.panel.q('[data-status]').textContent=t},queue(){try{return JSON.parse(localStorage.getItem(this.k.queue)||'[]')}catch{return[]}},saveQueue(q){localStorage.setItem(this.k.queue,JSON.stringify(q))},
+    clear(){this.token++;this.running=false;[this.k.queue,this.k.active,this.k.done,this.k.total].forEach(k=>localStorage.removeItem(k));this.status('Queue cleared')},
+    startRun(){this.mode=this.detect();if(!this.mode){this.status('Mode not detected');return}const sku=norm(this.panel.q('[data-sku]').value),list=this.panel.q('[data-list]').value.split(/\r?\n/).map(norm).filter(Boolean),state=this.panel.q('[data-state]').value,disp=this.panel.q('[data-disp]').value;if(this.mode==='sku'&&!sku){this.status('SKU required for Mode: Sku');return}if(!list.length){this.status('Need at least one location/item');return}localStorage.setItem(this.k.sku,sku);localStorage.setItem(this.k.state,state);localStorage.setItem(this.k.disp,disp);this.saveQueue(list);localStorage.setItem(this.k.done,'0');localStorage.setItem(this.k.total,String(list.length));localStorage.setItem(this.k.active,'1');this.drive();},
+    step(){const h=low(heading()),t=low(pageText());if(t.includes('the work is errored')||t.includes('service failed to process your request'))return'error';if(t.includes('success')&&t.includes('start over'))return'success';if(h.includes('confirm change')||t.includes('confirm change'))return'confirm';if(h.includes('select new disposition')||t.includes('select new disposition'))return'newDisp';if(h.includes('select new inventory state')||t.includes('select new inventory state'))return'newState';if(h.includes('select source disposition')||t.includes('select source disposition'))return'sourceDisp';if(h.includes('select source inventory state')||t.includes('select source inventory state'))return'sourceState';if(h.includes('input fnsku')||h.includes('input fcsku')||t.includes('input fnsku or fcsku'))return'item';if(h.includes('scan location')||t.includes('scan location')||t.includes('scan container'))return'location';return'unknown';},
+    async drive(){if(this.running)return;this.running=true;const tok=++this.token;try{while(this.active&&localStorage.getItem(this.k.active)==='1'&&this.token===tok){const q=this.queue();if(!q.length){this.clear();this.status('Complete');break}const current=q[0],sku=localStorage.getItem(this.k.sku)||'',state=localStorage.getItem(this.k.state)||'Unsellable',disp=localStorage.getItem(this.k.disp)||'Amazon Damage',step=this.step();this.status(`${this.mode?.toUpperCase()} • ${step} • ${q.length} remaining`);if(step==='error'){click(['start over'],'#aftm-edit')||press(document,'r')}else if(step==='location'){const i=await waitFor(()=>textInput('#aftm-edit'),10000,80,()=>this.token,tok);if(!i)break;setValue(i,current);press(i,'Enter')}else if(step==='item'){const value=this.mode==='sku'?sku:current,i=await waitFor(()=>textInput('#aftm-edit'),10000,80,()=>this.token,tok);if(!i)break;setValue(i,value);press(i,'Enter')}else if(step==='sourceState'){chooseRadio('Sellable')||chooseRadio('Unsellable')||chooseRadio('Pending Research');click(['continue'],'#aftm-edit')}else if(step==='sourceDisp'){chooseRadio('Amazon Damage')||chooseRadio('Defective')||chooseRadio('Distributor Damage')||chooseRadio('Expired');click(['continue'],'#aftm-edit')}else if(step==='newState'){chooseRadio(state);click(['continue'],'#aftm-edit')}else if(step==='newDisp'){if(low(state)==='unsellable')chooseRadio(disp);click(['continue'],'#aftm-edit')}else if(step==='confirm'){click(['change items','confirm','continue'],'#aftm-edit')||press(document,'Enter')}else if(step==='success'){click(['start over'],'#aftm-edit')||press(document,'r');q.shift();this.saveQueue(q);localStorage.setItem(this.k.done,String(+(localStorage.getItem(this.k.done)||0)+1));}await sleep(350);}}finally{this.running=false}}
+  };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startRouter, { once: true });
-  } else {
-    startRouter();
-  }
-
-  console.log(`AFT Tools Master CLEAN TEST v${VERSION} loaded`);
+  const modules=[MoveItems,FcSku,EditItems];let routeTimer=0;
+  function route(){clearTimeout(routeTimer);routeTimer=setTimeout(()=>{for(const m of modules){const yes=m.match();if(yes&&!m.active){m.active=true;m.start()}else if(!yes&&m.active){m.active=false;m.stop?.()}else if(yes)m.refresh?.();}},80)}
+  const start=()=>{const mo=new MutationObserver(route);mo.observe(document.documentElement,{childList:true,subtree:true,characterData:true});window.addEventListener('hashchange',route,true);window.addEventListener('popstate',route,true);window.addEventListener('focus',route,true);route();console.log(`AFT Tools Master CLEAN TEST v${VERSION} loaded`)};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
