@@ -1,0 +1,52 @@
+name: Build Tampermonkey install pack
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/**/*.user.js"
+      - ".github/workflows/build-install-pack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tampermonkey-install-pack
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build ZIP import pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          rm -f dist/tampermonkey-scripts.zip
+          find scripts -maxdepth 1 -type f -name '*.user.js' -print0 \
+            | sort -z \
+            | xargs -0 zip -j -9 dist/tampermonkey-scripts.zip
+          unzip -l dist/tampermonkey-scripts.zip
+
+      - name: Commit updated pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/tampermonkey-scripts.zip
+
+          if git diff --cached --quiet; then
+            echo "Install pack is already current."
+            exit 0
+          fi
+
+          git commit -m "Update Tampermonkey install pack"
+          git push
