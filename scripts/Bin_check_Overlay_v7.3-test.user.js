@@ -1,0 +1,630 @@
+// ==UserScript==
+// @name         v7.3-test Bin check Overlay
+// @namespace    https://gist.github.com/1Sirkkris
+// @version      7.3-test
+// @description  Clean test build with floor filters, optional quantity sorting, and lazy P2/P3/P4 bin copy.
+// @author       mojordaq / ChatGPT edit
+// @include      /^https?:\/\/.*fcresearch.*\//
+// @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/bin-overlay-v7-3-test/scripts/Bin_check_Overlay_v7.3-test.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/bin-overlay-v7-3-test/scripts/Bin_check_Overlay_v7.3-test.user.js
+// @require      https://drive-render.corp.amazon.com/view/mojordaq@/js%20src%20files/jquery-3.6.0.js
+// @require      https://drive-render.corp.amazon.com/view/mojordaq@/js%20src%20files/jstools.js
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// ==/UserScript==
+
+/* global waitForKeyElements, GM_xmlhttpRequest */
+
+(() => {
+  "use strict";
+
+  const POD_REGEX = /P-\d-(?:[A-Z]\d{3}){2}/;
+  const FLOORS = ["P2", "P3", "P4"];
+  const RETRY_DELAY_MS = 5000;
+  const MAX_RETRIES = 1;
+  const MAX_CONCURRENT_REQUESTS = 12;
+
+  const state = {
+    rows: [],
+    podBuckets: new Map(),
+    podCache: new Map(),
+    attempts: new Map(),
+    queue: [],
+    queued: new Set(),
+    activeRequests: 0,
+    processedPods: 0,
+    totalPods: 0,
+    totalRows: 0,
+    filter: "ALL",
+    sort: "DEFAULT",
+    paused: false,
+    overlayBuilt: false,
+    refreshTimer: null
+  };
+
+  injectStyles();
+
+  waitForKeyElements("#table-inventory", tableMatch => {
+    const table = tableMatch[0];
+    const nav = getInventoryNav();
+    if (!table || !nav || document.getElementById("p-level-overlay-start-btn")) return;
+
+    const button = document.createElement("button");
+    button.id = "p-level-overlay-start-btn";
+    button.type = "button";
+    button.textContent = "P-level overlay sorter";
+    Object.assign(button.style, {
+      order: "5",
+      backgroundColor: "orange",
+      color: "black",
+      marginLeft: "8px",
+      padding: "6px 10px",
+      borderRadius: "6px",
+      fontWeight: "700",
+      cursor: "pointer",
+      border: "1px solid #92400E"
+    });
+
+    button.addEventListener("click", () => {
+      button.hidden = true;
+      buildOverlay();
+      loadAllRows(table);
+    });
+
+    nav.appendChild(button);
+  }, true);
+
+  function getInventoryNav() {
+    let nav = document.getElementById("inventory-nav");
+    if (!nav || nav.tagName !== "A") return nav;
+
+    const replacement = document.createElement("span");
+    for (const attribute of nav.attributes) {
+      replacement.setAttribute(attribute.name, attribute.value);
+    }
+    replacement.append(...nav.childNodes);
+    nav.replaceWith(replacement);
+    return replacement;
+  }
+
+  function loadAllRows(table) {
+    if (state.paused) {
+      updateStatus("Paused");
+      setTimeout(() => loadAllRows(table), 300);
+      return;
+    }
+
+    const info = document.getElementById("table-inventory_info");
+    if (!info) return;
+
+    const match = info.textContent.match(/Showing\s+\d+\s+to\s+(\d+)\s+of\s+(\d+)/i);
+    const shown = match ? Number(match[1]) : 0;
+    const total = match ? Number(match[2]) : 0;
+    const scroller = table.parentElement;
+
+    if (shown < total && shown < 1000) {
+      scroller.scrollTop = scroller.scrollHeight;
+      setTimeout(() => loadAllRows(table), 10);
+      return;
+    }
+
+    scroller.scrollTop = 0;
+    startScan(table);
+  }
+
+  function startScan(table) {
+    resetRun();
+
+    const indexes = getColumnIndexes(table);
+    const bodyRows = table.tBodies?.[0]
+      ? Array.from(table.tBodies[0].rows)
+      : Array.from(table.rows).slice(1);
+
+    for (const row of bodyRows) {
+      const record = makeRowRecord(row, indexes);
+      if (!record) continue;
+
+      state.totalRows++;
+      if (!state.podBuckets.has(record.pod)) state.podBuckets.set(record.pod, []);
+      state.podBuckets.get(record.pod).push(record);
+    }
+
+    state.totalPods = state.podBuckets.size;
+    refreshOverlay();
+
+    for (const pod of state.podBuckets.keys()) {
+      if (state.podCache.has(pod)) {
+        applyPodResult(pod, state.podCache.get(pod));
+        state.processedPods++;
+      } else {
+        enqueuePod(pod);
+      }
+    }
+
+    scheduleRefresh();
+    pumpQueue();
+  }
+
+  function resetRun() {
+    state.rows.length = 0;
+    state.podBuckets.clear();
+    state.attempts.clear();
+    state.queue.length = 0;
+    state.queued.clear();
+    state.activeRequests = 0;
+    state.processedPods = 0;
+    state.totalPods = 0;
+    state.totalRows = 0;
+    state.filter = "ALL";
+    state.sort = "DEFAULT";
+    state.paused = false;
+    updateControlStates();
+    updatePauseButton();
+  }
+
+  function getColumnIndexes(table) {
+    const indexes = { container: 0, fnsku: 2, fcsku: 3, quantity: 5 };
+    const header = table.tHead?.rows?.[0] || table.rows?.[0];
+    if (!header) return indexes;
+
+    Array.from(header.cells).forEach((cell, index) => {
+      const name = cleanText(cell).toLowerCase();
+      if (name === "container") indexes.container = index;
+      if (name === "fnsku") indexes.fnsku = index;
+      if (name === "fcsku") indexes.fcsku = index;
+      if (name.startsWith("quantity")) indexes.quantity = index;
+    });
+
+    return indexes;
+  }
+
+  function makeRowRecord(row, indexes) {
+    const cells = Array.from(row.cells || []);
+    const containerCell = cells[indexes.container];
+    if (!containerCell) return null;
+
+    const pod = cleanText(containerCell).match(POD_REGEX)?.[0];
+    if (!pod) return null;
+
+    const quantity = cleanText(cells[indexes.quantity]);
+    const link = containerCell.querySelector("a");
+
+    return {
+      pod,
+      floorLabel: "",
+      floorClass: "px",
+      floorNum: 99,
+      containerText: cleanText(containerCell),
+      containerHref: link?.href || "",
+      quantity,
+      quantityValue: numericQuantity(quantity),
+      fnsku: cleanText(cells[indexes.fnsku]),
+      fcsku: cleanText(cells[indexes.fcsku])
+    };
+  }
+
+  function enqueuePod(pod) {
+    if (!pod || state.queued.has(pod)) return;
+    state.queued.add(pod);
+    state.queue.push(pod);
+  }
+
+  function pumpQueue() {
+    if (state.paused) {
+      updateStatus("Paused");
+      return;
+    }
+
+    while (state.activeRequests < MAX_CONCURRENT_REQUESTS && state.queue.length) {
+      const pod = state.queue.shift();
+      state.queued.delete(pod);
+      fetchPodFloor(pod);
+    }
+  }
+
+  function fetchPodFloor(pod) {
+    state.activeRequests++;
+
+    GM_xmlhttpRequest({
+      method: "GET",
+      url: hierarchyUrl(pod),
+      onload: response => {
+        state.activeRequests--;
+        const result = parseFloor(response.responseText);
+        if (!result.num && scheduleRetry(pod)) return;
+        finalizePod(pod, result);
+      },
+      onerror: () => {
+        state.activeRequests--;
+        if (scheduleRetry(pod)) return;
+        finalizePod(pod, unknownFloor());
+      }
+    });
+  }
+
+  function hierarchyUrl(pod) {
+    const base = window.location.href.split("?")[0].replace(/\/$/, "");
+    return `${base}/container-hierarchy?s=${encodeURIComponent(pod)}`;
+  }
+
+  function scheduleRetry(pod) {
+    const attempts = state.attempts.get(pod) || 0;
+    if (attempts >= MAX_RETRIES) return false;
+
+    state.attempts.set(pod, attempts + 1);
+    setTimeout(() => {
+      enqueuePod(pod);
+      pumpQueue();
+    }, RETRY_DELAY_MS);
+    pumpQueue();
+    return true;
+  }
+
+  function parseFloor(html) {
+    const documentCopy = new DOMParser().parseFromString(html, "text/html");
+    const cell = documentCopy.querySelector(
+      "div.a-span6:nth-child(1) > table:nth-child(1) > tbody:nth-child(1) > tr:nth-child(4) > td:nth-child(2)"
+    );
+    const raw = (cell?.textContent || "").split(",")[0];
+    const num = raw.match(/\b(\d+)\b/)?.[1] || "";
+
+    return num
+      ? { num, label: `P${num}`, cls: `p${num}`, floorNum: Number(num) }
+      : unknownFloor();
+  }
+
+  function unknownFloor() {
+    return { num: "", label: "P-", cls: "px", floorNum: 99 };
+  }
+
+  function finalizePod(pod, result) {
+    state.podCache.set(pod, result);
+    applyPodResult(pod, result);
+    state.processedPods++;
+    scheduleRefresh();
+    updateStatus(state.processedPods >= state.totalPods ? "Done" : "");
+    pumpQueue();
+  }
+
+  function applyPodResult(pod, result) {
+    for (const record of state.podBuckets.get(pod) || []) {
+      record.floorLabel = result.label;
+      record.floorClass = result.cls;
+      record.floorNum = result.floorNum;
+      state.rows.push(record);
+    }
+  }
+
+  function buildOverlay() {
+    const existing = document.getElementById("pLevelOverlay");
+    if (existing) {
+      existing.hidden = false;
+      existing.classList.remove("minimized");
+      return;
+    }
+
+    state.overlayBuilt = true;
+    const overlay = document.createElement("div");
+    overlay.id = "pLevelOverlay";
+    overlay.innerHTML = `
+      <div id="pLevelOverlayHeader">
+        <div>
+          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3-test</span>
+          <span id="pLevelOverlayStatus">Starting...</span>
+        </div>
+        <div id="pLevelOverlayActions">
+          <button type="button" id="pLevelPauseBtn">Pause</button>
+          <button type="button" id="pLevelMinBtn">Min</button>
+          <button type="button" id="pLevelCloseBtn">Hide</button>
+        </div>
+      </div>
+      <div id="pLevelOverlayBody">
+        <div id="pLevelOverlayControls">
+          <button type="button" data-filter="ALL" class="active">All</button>
+          <button type="button" data-filter="P2" class="p2btn">P2</button>
+          <button type="button" data-filter="P3" class="p3btn">P3</button>
+          <button type="button" data-filter="P4" class="p4btn">P4</button>
+          <button type="button" data-filter="P1" class="p1btn">P1</button>
+          <span class="p-level-muted">Sort:</span>
+          <button type="button" data-sort="DEFAULT" class="active">Default</button>
+          <button type="button" data-sort="QTY_DESC">Qty ↓</button>
+          <button type="button" data-sort="QTY_ASC">Qty ↑</button>
+          <button type="button" id="pLevelLazyBtn">Lazy bin check</button>
+          <button type="button" id="pLevelCopyBtn">Copy visible</button>
+        </div>
+        <div class="p-level-muted" id="pLevelOverlayHint">
+          Floor filter and quantity sort work together. FCResearch table remains unchanged.
+        </div>
+        <table id="pLevelOverlayTable">
+          <thead><tr><th>Floor</th><th>Container</th><th>Qty</th><th>FNSKU</th><th>FcSku</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>`;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById("pLevelCloseBtn").addEventListener("click", () => {
+      overlay.hidden = true;
+      const startButton = document.getElementById("p-level-overlay-start-btn");
+      if (startButton) {
+        startButton.hidden = false;
+        startButton.textContent = "Show P-level overlay";
+      }
+    });
+
+    document.getElementById("pLevelMinBtn").addEventListener("click", event => {
+      overlay.classList.toggle("minimized");
+      event.currentTarget.textContent = overlay.classList.contains("minimized") ? "Open" : "Min";
+    });
+
+    document.getElementById("pLevelPauseBtn").addEventListener("click", () => {
+      state.paused = !state.paused;
+      updatePauseButton();
+      updateStatus(state.paused ? "Paused" : "Resuming");
+      if (!state.paused) pumpQueue();
+    });
+
+    document.getElementById("pLevelOverlayControls").addEventListener("click", event => {
+      const button = event.target.closest("button");
+      if (!button) return;
+
+      if (button.dataset.filter) state.filter = button.dataset.filter;
+      if (button.dataset.sort) state.sort = button.dataset.sort;
+      if (button.id === "pLevelLazyBtn") copyLazyBinCheck();
+      if (button.id === "pLevelCopyBtn") copyVisibleRows();
+
+      updateControlStates();
+      refreshOverlay();
+    });
+
+    refreshOverlay();
+  }
+
+  function updateControlStates() {
+    document.querySelectorAll("#pLevelOverlayControls [data-filter]").forEach(button => {
+      button.classList.toggle("active", button.dataset.filter === state.filter);
+    });
+    document.querySelectorAll("#pLevelOverlayControls [data-sort]").forEach(button => {
+      button.classList.toggle("active", button.dataset.sort === state.sort);
+    });
+  }
+
+  function visibleRows() {
+    const rows = state.filter === "ALL"
+      ? state.rows.slice()
+      : state.rows.filter(row => row.floorLabel === state.filter);
+
+    return rows.sort((a, b) => {
+      if (state.sort !== "DEFAULT") {
+        const direction = state.sort === "QTY_ASC" ? 1 : -1;
+        const quantityDifference = (a.quantityValue - b.quantityValue) * direction;
+        if (quantityDifference) return quantityDifference;
+      }
+
+      return (a.floorNum - b.floorNum) || a.containerText.localeCompare(b.containerText);
+    });
+  }
+
+  function scheduleRefresh() {
+    if (state.refreshTimer) return;
+    state.refreshTimer = setTimeout(() => {
+      state.refreshTimer = null;
+      refreshOverlay();
+    }, 120);
+  }
+
+  function refreshOverlay() {
+    if (!state.overlayBuilt) return;
+    const tbody = document.querySelector("#pLevelOverlayTable tbody");
+    if (!tbody) return;
+
+    const rows = visibleRows();
+    tbody.replaceChildren();
+
+    if (!rows.length) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 5;
+      cell.className = "p-level-muted";
+      cell.textContent = "No rows yet.";
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      updateStatus();
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const record of rows) fragment.appendChild(renderRow(record));
+    tbody.appendChild(fragment);
+    updateStatus();
+  }
+
+  function renderRow(record) {
+    const row = document.createElement("tr");
+
+    const floorCell = document.createElement("td");
+    const floorPill = document.createElement("span");
+    floorPill.className = `p-sort-pill ${record.floorClass}`;
+    floorPill.textContent = record.floorLabel;
+    floorCell.appendChild(floorPill);
+
+    const containerCell = document.createElement("td");
+    const container = document.createElement(record.containerHref ? "a" : "span");
+    container.className = "p-level-copy";
+    container.textContent = record.containerText;
+    if (record.containerHref) {
+      container.href = record.containerHref;
+      container.target = "_blank";
+      container.rel = "noopener";
+    }
+    containerCell.appendChild(container);
+
+    row.append(
+      floorCell,
+      containerCell,
+      textCell(record.quantity),
+      textCell(record.fnsku),
+      textCell(record.fcsku)
+    );
+    return row;
+  }
+
+  function textCell(value) {
+    const cell = document.createElement("td");
+    cell.textContent = value;
+    return cell;
+  }
+
+  function updatePauseButton() {
+    const button = document.getElementById("pLevelPauseBtn");
+    if (!button) return;
+    button.textContent = state.paused ? "Resume" : "Pause";
+    button.classList.toggle("paused", state.paused);
+  }
+
+  function updateStatus(message = "") {
+    const status = document.getElementById("pLevelOverlayStatus");
+    if (!status) return;
+
+    const prefix = message || (state.paused ? "Paused" : "");
+    const progress = state.totalPods
+      ? `${state.processedPods}/${state.totalPods} containers | ${state.rows.length}/${state.totalRows} rows`
+      : `${state.rows.length} rows`;
+    const queue = state.totalPods && state.processedPods < state.totalPods
+      ? ` | active ${state.activeRequests} | queued ${state.queue.length}`
+      : "";
+
+    status.textContent = `- ${prefix ? `${prefix} | ` : ""}${progress}${queue} | showing ${visibleRows().length}`;
+  }
+
+  function copyLazyBinCheck() {
+    if (!state.rows.length) return flashButton("pLevelLazyBtn", "No bins");
+    if (state.totalPods && state.processedPods < state.totalPods) {
+      return flashButton("pLevelLazyBtn", "Wait for scan");
+    }
+
+    const rowsByFnsku = new Map();
+    for (const row of state.rows) {
+      const fnsku = cleanCopyField(row.fnsku || row.fcsku);
+      if (!fnsku) continue;
+      if (!rowsByFnsku.has(fnsku)) rowsByFnsku.set(fnsku, []);
+      rowsByFnsku.get(fnsku).push(row);
+    }
+
+    if (!rowsByFnsku.size) return flashButton("pLevelLazyBtn", "No FNSKU");
+
+    const lines = [];
+    for (const [fnsku, rows] of rowsByFnsku) {
+      const bins = FLOORS.map(floor => highestQuantityBin(rows, floor));
+      lines.push([fnsku, ...bins].map(cleanCopyField).join("\t"));
+    }
+
+    copyText(lines.join("\n"), "pLevelLazyBtn");
+  }
+
+  function highestQuantityBin(rows, floor) {
+    return rows
+      .filter(row => row.floorLabel === floor && row.containerText)
+      .sort((a, b) => (b.quantityValue - a.quantityValue) || a.containerText.localeCompare(b.containerText))[0]
+      ?.containerText || "";
+  }
+
+  function copyVisibleRows() {
+    const lines = [["Floor", "Container", "Qty", "FNSKU", "FcSku"]];
+    for (const row of visibleRows()) {
+      lines.push([row.floorLabel, row.containerText, row.quantity, row.fnsku, row.fcsku]);
+    }
+    copyText(lines.map(columns => columns.map(cleanCopyField).join("\t")).join("\n"), "pLevelCopyBtn");
+  }
+
+  function copyText(text, buttonId) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.readOnly = true;
+    Object.assign(textarea.style, {
+      position: "fixed",
+      left: "-9999px",
+      top: "0",
+      opacity: "0"
+    });
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (_) {}
+    textarea.remove();
+
+    if (copied) return flashButton(buttonId, "Copied");
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => flashButton(buttonId, "Copied"))
+        .catch(() => window.prompt("Copy rows:", text));
+      return;
+    }
+    window.prompt("Copy rows:", text);
+  }
+
+  function flashButton(id, message) {
+    const button = document.getElementById(id);
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = message;
+    setTimeout(() => { button.textContent = original; }, 1000);
+  }
+
+  function numericQuantity(value) {
+    const match = String(value || "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+    return match ? Number(match[0]) : 0;
+  }
+
+  function cleanText(node) {
+    return node?.textContent?.replace(/\s+/g, " ").trim() || "";
+  }
+
+  function cleanCopyField(value) {
+    return String(value || "")
+      .replace(/\r?\n|\t/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function injectStyles() {
+    const style = document.createElement("style");
+    style.textContent = `
+      #pLevelOverlay{position:fixed;right:14px;bottom:14px;width:660px;max-width:calc(100vw - 28px);max-height:78vh;z-index:999999;background:#fff;border:2px solid #111827;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-family:Arial,Helvetica,sans-serif;color:#111827;overflow:hidden}
+      #pLevelOverlay[hidden]{display:none}
+      #pLevelOverlay.minimized{width:300px;max-height:58px}
+      #pLevelOverlayHeader{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#111827;color:#fff;padding:8px 10px;font-weight:800}
+      #pLevelOverlayTitle{font-size:14px;line-height:1.15}
+      #pLevelOverlayStatus{font-size:12px;font-weight:700;opacity:.95;margin-left:6px}
+      #pLevelOverlayActions,#pLevelOverlayControls{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+      #pLevelOverlayActions{flex-shrink:0}
+      #pLevelOverlay button{cursor:pointer;border:1px solid #374151;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:800;background:#f3f4f6;color:#111827}
+      #pLevelOverlay button:hover{background:#e5e7eb}
+      #pLevelOverlay button.active{outline:3px solid #111827;outline-offset:1px}
+      #pLevelOverlayBody{padding:9px;overflow:auto;max-height:calc(78vh - 46px)}
+      #pLevelOverlay.minimized #pLevelOverlayBody{display:none}
+      #pLevelOverlayControls{margin-bottom:8px}
+      #pLevelOverlayControls .p1btn{background:#F0E442;color:#111}
+      #pLevelOverlayControls .p2btn{background:#009E73;color:#fff}
+      #pLevelOverlayControls .p3btn{background:#E69F00;color:#111}
+      #pLevelOverlayControls .p4btn{background:#0072B2;color:#fff}
+      #pLevelPauseBtn.paused{background:#F59E0B;color:#111827;border-color:#92400E}
+      #pLevelOverlayHint{margin-bottom:7px}
+      #pLevelOverlayTable{width:100%;border-collapse:collapse;font-size:12px}
+      #pLevelOverlayTable th,#pLevelOverlayTable td{border-bottom:1px solid #e5e7eb;padding:6px 5px;text-align:left;vertical-align:middle;white-space:nowrap}
+      #pLevelOverlayTable th{position:sticky;top:0;background:#f9fafb;z-index:1;font-weight:900}
+      #pLevelOverlayTable tr:hover{background:#f3f4f6}
+      .p-sort-pill{display:inline-block;min-width:28px;text-align:center;border-radius:7px;padding:3px 7px;font-weight:900;box-shadow:0 0 0 1.5px rgba(0,0,0,.25) inset}
+      .p-sort-pill.p1{background:#F0E442;color:#111}.p-sort-pill.p2{background:#009E73;color:#fff}.p-sort-pill.p3{background:#E69F00;color:#111}.p-sort-pill.p4{background:#0072B2;color:#fff}
+      .p-sort-pill.px{background:repeating-linear-gradient(135deg,#E5E7EB 0 8px,#CBD5E1 8px 16px);color:#111}
+      .p-level-copy{color:#005eb8;font-weight:800;text-decoration:none;cursor:pointer}
+      .p-level-muted{color:#6b7280;font-size:12px;font-weight:700}
+    `;
+    document.head.appendChild(style);
+  }
+})();
