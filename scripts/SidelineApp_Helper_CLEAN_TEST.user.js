@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v1.4.2 SidelineApp Helper CLEAN TEST
+// @name         v1.4.3 SidelineApp Helper CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      1.4.2
-// @description  Moves Clear Source away from active controls, plus expiry-to-quantity handoff and retained expiry recovery.
+// @version      1.4.3
+// @description  Scan source or destination again to start Lazy Sideline; simplified state display and safer Clear Source placement.
 // @match        https://aft-poirot-website-nrt.nrt.proxy.amazon.com/*
 // @require      https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/e409914de9433290527fb93197bae0e0f7edb4c4/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
 // @require      https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/51643623e3e66a7c7c2a00e6e245a5dc47debbab/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
@@ -14,10 +14,10 @@
 
 (() => {
   'use strict';
-  if (window.__sidelineCleanExpiryQty_v142) return;
-  window.__sidelineCleanExpiryQty_v142 = true;
+  if (window.__sidelineCleanExpiryQty_v143) return;
+  window.__sidelineCleanExpiryQty_v143 = true;
 
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const normalise = value => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 
   let checkQueued = false;
@@ -67,7 +67,8 @@
         title.textContent = String(title.textContent || '')
           .replace(/v1\.3\.6\b/g, `v${VERSION}`)
           .replace(/v1\.4\.0\b/g, `v${VERSION}`)
-          .replace(/v1\.4\.1\b/g, `v${VERSION}`);
+          .replace(/v1\.4\.1\b/g, `v${VERSION}`)
+          .replace(/v1\.4\.2\b/g, `v${VERSION}`);
       });
   }
 
@@ -290,10 +291,82 @@
     }
   }
 
+  function simplifyLazyStatus() {
+    const status = document.querySelector('#sh-lazy .sh-status');
+    if (!status) return;
+
+    const raw = normalise(status.textContent);
+    let simple = '';
+    if (!raw || raw.startsWith('idle') || raw.startsWith('stopped')) simple = 'IDLE';
+    else if (raw.startsWith('paused') || raw.startsWith('predicant')) simple = 'PAUSED';
+    else if (raw.startsWith('running') || raw.startsWith('recovering')) simple = 'ACTIVE';
+
+    if (simple && status.textContent !== simple) status.textContent = simple;
+  }
+
+  function currentScannedLine(textarea) {
+    const value = String(textarea.value || '');
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? start;
+    const lineStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+    const nextBreak = value.indexOf('\n', end);
+    const lineEnd = nextBreak === -1 ? value.length : nextBreak;
+    return {
+      value,
+      lineStart,
+      lineEnd,
+      code: value.slice(lineStart, lineEnd).trim()
+    };
+  }
+
+  function removeScannedLine(textarea, scan) {
+    let before = scan.value.slice(0, scan.lineStart);
+    let after = scan.value.slice(scan.lineEnd);
+
+    if (before.endsWith('\n') && after.startsWith('\n')) after = after.slice(1);
+    const nextValue = `${before}${after}`;
+    setInput(textarea, nextValue);
+    textarea.focus();
+    textarea.setSelectionRange?.(nextValue.length, nextValue.length);
+  }
+
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || event.repeat) return;
+
+    const textarea = event.target.closest?.('#sh-lazy textarea[data-f="items"]');
+    if (!textarea) return;
+
+    const panel = textarea.closest('#sh-lazy');
+    const status = panel?.querySelector('.sh-status');
+    if (!panel || !normalise(status?.textContent).startsWith('idle')) return;
+
+    const source = String(panel.querySelector('input[data-f="src"]')?.value || '').trim();
+    const destination = String(panel.querySelector('input[data-f="dest"]')?.value || '').trim();
+    const validContainer = value => /^(?:cs|ts)x[0-9a-z_-]+$/i.test(value);
+    if (!validContainer(source) || !validContainer(destination)) return;
+
+    const scan = currentScannedLine(textarea);
+    const code = normalise(scan.code);
+    if (code !== normalise(source) && code !== normalise(destination)) return;
+
+    const remainingText = `${scan.value.slice(0, scan.lineStart)}${scan.value.slice(scan.lineEnd)}`;
+    const hasItems = remainingText.split(/\r?\n/).some(line => line.trim());
+    if (!hasItems) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    removeScannedLine(textarea, scan);
+
+    const startButton = panel.querySelector('button[data-a="start"]');
+    if (startButton && !startButton.disabled) setTimeout(() => startButton.click(), 20);
+  }, true);
+
   function runCheck() {
     checkQueued = false;
     stampVersion();
     moveClearSourceControl();
+    simplifyLazyStatus();
     maintainExpiryMemory();
 
     if (resumeBusy || Date.now() - lastResumeAt < 750) return;
