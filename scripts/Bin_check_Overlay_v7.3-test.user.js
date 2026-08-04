@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v7.3.1-test Bin check Overlay
+// @name         v7.3.2-test Bin check Overlay
 // @namespace    https://gist.github.com/1Sirkkris
-// @version      7.3.1-test
+// @version      7.3.2-test
 // @description  Clean test build with floor filters, optional quantity sorting, and lazy P2/P3/P4 bin copy.
 // @author       mojordaq / ChatGPT edit
 // @include      /^https?:\/\/.*fcresearch.*\//
@@ -310,7 +310,7 @@
     overlay.innerHTML = `
       <div id="pLevelOverlayHeader">
         <div>
-          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3.1-test</span>
+          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3.2-test</span>
           <span id="pLevelOverlayStatus">Starting...</span>
         </div>
         <div id="pLevelOverlayActions">
@@ -332,7 +332,6 @@
           <button type="button" data-sort="QTY_ASC">Qty ↑</button>
           <span class="p-level-divider" aria-hidden="true"></span>
           <button type="button" id="pLevelLazyBtn">Lazy bin check</button>
-          <button type="button" id="pLevelCopyBtn">Copy visible</button>
         </div>
         <div class="p-level-muted" id="pLevelOverlayHint">
           Floor filter and quantity sort work together. FCResearch table remains unchanged.
@@ -373,7 +372,6 @@
       if (button.dataset.filter) state.filter = button.dataset.filter;
       if (button.dataset.sort) state.sort = button.dataset.sort;
       if (button.id === "pLevelLazyBtn") copyLazyBinCheck();
-      if (button.id === "pLevelCopyBtn") copyVisibleRows();
 
       updateControlStates();
       refreshOverlay();
@@ -529,14 +527,6 @@
       .filter(row => row.floorLabel === floor && row.containerText)
       .sort((a, b) => (b.quantityValue - a.quantityValue) || a.containerText.localeCompare(b.containerText))[0]
       ?.containerText || "";
-  }
-
-  function copyVisibleRows() {
-    const lines = [["Floor", "Container", "Qty", "FNSKU", "FcSku"]];
-    for (const row of visibleRows()) {
-      lines.push([row.floorLabel, row.containerText, row.quantity, row.fnsku, row.fcsku]);
-    }
-    copyText(lines.map(columns => columns.map(cleanCopyField).join("\t")).join("\n"), "pLevelCopyBtn");
   }
 
   function copyText(text, buttonId) {
