@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v7.3-test Bin check Overlay
+// @name         v7.3.1-test Bin check Overlay
 // @namespace    https://gist.github.com/1Sirkkris
-// @version      7.3-test
+// @version      7.3.1-test
 // @description  Clean test build with floor filters, optional quantity sorting, and lazy P2/P3/P4 bin copy.
 // @author       mojordaq / ChatGPT edit
 // @include      /^https?:\/\/.*fcresearch.*\//
@@ -310,7 +310,7 @@
     overlay.innerHTML = `
       <div id="pLevelOverlayHeader">
         <div>
-          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3-test</span>
+          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3.1-test</span>
           <span id="pLevelOverlayStatus">Starting...</span>
         </div>
         <div id="pLevelOverlayActions">
@@ -326,10 +326,11 @@
           <button type="button" data-filter="P3" class="p3btn">P3</button>
           <button type="button" data-filter="P4" class="p4btn">P4</button>
           <button type="button" data-filter="P1" class="p1btn">P1</button>
-          <span class="p-level-muted">Sort:</span>
-          <button type="button" data-sort="DEFAULT" class="active">Default</button>
+          <span class="p-level-divider" aria-hidden="true"></span>
+          <button type="button" data-sort="DEFAULT" class="active">Floor</button>
           <button type="button" data-sort="QTY_DESC">Qty ↓</button>
           <button type="button" data-sort="QTY_ASC">Qty ↑</button>
+          <span class="p-level-divider" aria-hidden="true"></span>
           <button type="button" id="pLevelLazyBtn">Lazy bin check</button>
           <button type="button" id="pLevelCopyBtn">Copy visible</button>
         </div>
@@ -601,14 +602,16 @@
       #pLevelOverlayHeader{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#111827;color:#fff;padding:8px 10px;font-weight:800}
       #pLevelOverlayTitle{font-size:14px;line-height:1.15}
       #pLevelOverlayStatus{font-size:12px;font-weight:700;opacity:.95;margin-left:6px}
-      #pLevelOverlayActions,#pLevelOverlayControls{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
-      #pLevelOverlayActions{flex-shrink:0}
+      #pLevelOverlayActions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+      #pLevelOverlayControls{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;white-space:nowrap;overflow-x:auto;scrollbar-width:thin}
       #pLevelOverlay button{cursor:pointer;border:1px solid #374151;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:800;background:#f3f4f6;color:#111827}
+      #pLevelOverlayControls button{padding:4px 7px;flex:0 0 auto}
       #pLevelOverlay button:hover{background:#e5e7eb}
       #pLevelOverlay button.active{outline:3px solid #111827;outline-offset:1px}
       #pLevelOverlayBody{padding:9px;overflow:auto;max-height:calc(78vh - 46px)}
       #pLevelOverlay.minimized #pLevelOverlayBody{display:none}
-      #pLevelOverlayControls{margin-bottom:8px}
+      #pLevelOverlayControls{margin-bottom:8px;padding-bottom:2px}
+      #pLevelOverlayControls .p-level-divider{width:1px;height:22px;background:#cbd5e1;margin:0 2px;flex:0 0 1px}
       #pLevelOverlayControls .p1btn{background:#F0E442;color:#111}
       #pLevelOverlayControls .p2btn{background:#009E73;color:#fff}
       #pLevelOverlayControls .p3btn{background:#E69F00;color:#111}
