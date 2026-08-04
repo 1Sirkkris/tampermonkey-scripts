@@ -1,6 +1,7 @@
 // ==UserScript==
 // @name         v1.8.12 PO Cell Highlighter
 // @namespace    Violentmonkey Scripts
+// @version      1.8.12
 // @description  Highlight Unfilled/Canceled cells (>0). If Order Date > 6 months, softly tint ONLY the Date column and the two columns to its left (Discount and Title). Date cell gets a stronger tint if > 7 months. No sorting.
 // @include     /^https?:\/\/.*fcresearch.*\//
 // @include     /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
