@@ -17,8 +17,8 @@
 // @grant        GM_setValue
 // @connect      aft-poirot-website-nrt.nrt.proxy.amazon.com
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_Sideline_Bin_Size.user.js
-// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/FCResearch_Sideline_Bin_Size.user.js
+// @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Sideline_Bin_Size.user.js
+// @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Sideline_Bin_Size.user.js
 // ==/UserScript==
 
 (() => {
