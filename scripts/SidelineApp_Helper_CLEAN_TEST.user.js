@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v1.4.1 SidelineApp Helper CLEAN TEST
+// @name         v1.4.2 SidelineApp Helper CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      1.4.1
-// @description  Lazy Sideline expiry-to-quantity handoff, retained expiry through Predicant recovery, and larger expiry controls.
+// @version      1.4.2
+// @description  Moves Clear Source away from active controls, plus expiry-to-quantity handoff and retained expiry recovery.
 // @match        https://aft-poirot-website-nrt.nrt.proxy.amazon.com/*
 // @require      https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/e409914de9433290527fb93197bae0e0f7edb4c4/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
 // @require      https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/51643623e3e66a7c7c2a00e6e245a5dc47debbab/scripts/SidelineApp_Helper_CLEAN_TEST.user.js
@@ -14,10 +14,10 @@
 
 (() => {
   'use strict';
-  if (window.__sidelineCleanExpiryQty_v141) return;
-  window.__sidelineCleanExpiryQty_v141 = true;
+  if (window.__sidelineCleanExpiryQty_v142) return;
+  window.__sidelineCleanExpiryQty_v142 = true;
 
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const normalise = value => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 
   let checkQueued = false;
@@ -41,6 +41,23 @@
     #sh-og-expiry .og-head{font-size:13px!important;margin-bottom:8px!important}
     #sh-og-expiry button{height:35px!important;font-size:13px!important;font-weight:850!important}
     #sh-og-expiry .og-footer button{height:48px!important;font-size:15px!important}
+    #sh-lazy .sh-clear-source-option{
+      display:flex!important;
+      align-items:center;
+      justify-content:flex-end;
+      gap:7px;
+      width:max-content;
+      margin:12px 0 0 auto!important;
+      padding:7px 10px;
+      border:1px solid #fed7aa;
+      border-radius:4px;
+      background:#fff7ed;
+      color:#9a3412;
+      font-weight:750;
+      cursor:pointer;
+      user-select:none;
+    }
+    #sh-lazy .sh-clear-source-option input{margin:0;cursor:pointer}
   `;
   document.documentElement.appendChild(readabilityStyle);
 
@@ -49,7 +66,8 @@
       .forEach(title => {
         title.textContent = String(title.textContent || '')
           .replace(/v1\.3\.6\b/g, `v${VERSION}`)
-          .replace(/v1\.4\.0\b/g, `v${VERSION}`);
+          .replace(/v1\.4\.0\b/g, `v${VERSION}`)
+          .replace(/v1\.4\.1\b/g, `v${VERSION}`);
       });
   }
 
@@ -256,9 +274,26 @@
     }
   }
 
+  function moveClearSourceControl() {
+    const panel = document.querySelector('#sh-lazy');
+    const checkbox = panel?.querySelector('input[data-f="clear"]');
+    const label = checkbox?.closest('label');
+    if (!panel || !label) return;
+
+    label.classList.add('sh-clear-source-option');
+    label.removeAttribute('style');
+    label.title = 'Optional: empty the source container only after all items finish.';
+
+    const progress = panel.querySelector('.sh-progress');
+    if (progress && label.previousElementSibling !== progress) {
+      progress.insertAdjacentElement('afterend', label);
+    }
+  }
+
   function runCheck() {
     checkQueued = false;
     stampVersion();
+    moveClearSourceControl();
     maintainExpiryMemory();
 
     if (resumeBusy || Date.now() - lastResumeAt < 750) return;
