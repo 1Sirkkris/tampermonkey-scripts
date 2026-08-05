@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v0.3.0 AFT Tools Master CLEAN TEST
+// @name         v0.3.1 AFT Tools Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.3.0
-// @description  One clean AFT master for EditItems Each/Sku, expiration queue, FcSku Flip and MoveItems.
+// @version      0.3.1
+// @description  Single clean AFT master: Mode Each Quick Flip, Mode Sku loop, Expiration Queue, FcSku Flip and MoveItems.
 // @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
 // @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
 // @match        http://aft-qt-*.aka.*.corp.amazon.com/app/edititems*
@@ -29,22 +29,15 @@
 
 (() => {
   'use strict';
-  if (window.__AFT_MASTER_V030__) return;
-  window.__AFT_MASTER_V030__ = true;
+  if (window.__AFT_MASTER_V031__) return;
+  window.__AFT_MASTER_V031__ = true;
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.3.1';
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const norm = v => String(v ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
   const low = v => norm(v).toLowerCase();
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const store = {
-    get(k, d = '') { const v = localStorage.getItem(k); return v == null ? d : v; },
-    set(k, v) { localStorage.setItem(k, String(v)); },
-    del(...keys) { keys.forEach(k => localStorage.removeItem(k)); },
-    json(k, d = []) { try { const v = JSON.parse(localStorage.getItem(k) || 'null'); return v ?? d; } catch { return d; } },
-    setJson(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
-  };
 
   function visible(el) {
     if (!el || !el.isConnected || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
@@ -52,9 +45,8 @@
     const s = getComputedStyle(el);
     return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
   }
-  const pageText = () => norm(document.body?.innerText || '');
-  const heading = () => norm($$('h1,h2,h3,[role="heading"]').map(x => x.textContent).find(Boolean) || '');
-
+  function pageText() { return norm(document.body?.innerText || ''); }
+  function heading() { return norm($$('h1,h2,h3,[role="heading"]').map(x => x.textContent).find(Boolean) || ''); }
   function setValue(el, value) {
     if (!el) return false;
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -69,25 +61,28 @@
     const code = key === 'Enter' ? 'Enter' : `Key${key.toUpperCase()}`;
     const n = key === 'Enter' ? 13 : key.toUpperCase().charCodeAt(0);
     for (const type of ['keydown', 'keypress', 'keyup']) {
-      (target || document).dispatchEvent(new KeyboardEvent(type, { key, code, keyCode: n, which: n, bubbles: true, cancelable: true }));
+      (target || document).dispatchEvent(new KeyboardEvent(type, { key, code, keyCode:n, which:n, bubbles:true, cancelable:true }));
     }
   }
-  function textInput(exclude = '') {
-    return $$('input[type="text"],input[type="search"],input:not([type]),textarea').filter(visible).find(el => !exclude || !el.closest(exclude)) || null;
+  function inputOutside(exclude = '') {
+    return $$('input[type="text"],input:not([type]),textarea').filter(visible).find(el => !exclude || !el.closest(exclude)) || null;
   }
   function button(words, exclude = '') {
     const wanted = words.map(low);
     return $$('button,input[type="button"],input[type="submit"],a,[role="button"],span.a-button,div.a-button')
       .filter(visible).filter(el => !exclude || !el.closest(exclude))
-      .find(el => { const t = low(el.textContent || el.value || el.getAttribute('aria-label')); return t && wanted.some(w => t.includes(w)); }) || null;
+      .find(el => {
+        const t = low(el.textContent || el.value || el.getAttribute('aria-label'));
+        return t && wanted.some(w => t.includes(w));
+      }) || null;
   }
   function click(words, exclude = '') {
     const n = button(words, exclude); if (!n) return false;
     const real = n.querySelector?.('input.a-button-input,input[type="submit"],button') || n;
     if (!visible(real)) return false;
-    real.scrollIntoView?.({ block: 'center', inline: 'center' }); real.click(); return true;
+    real.click(); return true;
   }
-  async function waitFor(fn, timeout = 12000, every = 80, tokenFn = null, token = null) {
+  async function waitFor(fn, timeout = 12000, every = 90, tokenFn = null, token = null) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
       if (tokenFn && tokenFn() !== token) return null;
@@ -99,171 +94,83 @@
   function radioByText(wanted) {
     const w = low(wanted);
     for (const r of $$('input[type="radio"]')) {
-      const value = low(r.value).replace(/_/g, ' ');
-      let node = r, text = '';
+      let node = r, text = low(r.value).replace(/_/g, ' ');
       for (let i = 0; i < 7 && node; i++, node = node.parentElement) {
-        if ((node.querySelectorAll?.('input[type="radio"]').length || 0) === 1) { text = low(node.textContent); if (text) break; }
+        if ((node.querySelectorAll?.('input[type="radio"]').length || 0) === 1) { text += ' ' + low(node.textContent); break; }
       }
-      if (value === w || text === w || text.startsWith(w + ' ') || text.includes(w + ' (quantity:')) return r;
+      if (text.includes(w) && !(w === 'sellable' && text.includes('unsellable'))) return r;
     }
     return null;
   }
   function chooseRadio(label) {
     const r = radioByText(label); if (!r) return false;
-    r.scrollIntoView?.({ block: 'center' }); r.click();
-    r.dispatchEvent(new Event('input', { bubbles: true })); r.dispatchEvent(new Event('change', { bubbles: true })); return true;
-  }
-  function dateInputs() {
-    const visibleInputs = $$('input').filter(visible);
-    const byHint = hint => visibleInputs.find(i => low([i.id, i.name, i.placeholder, i.getAttribute('aria-label')].join(' ')).includes(hint));
-    const year = byHint('year') || byHint('yyyy');
-    const month = byHint('month') || byHint('mm');
-    const day = byHint('day') || byHint('dd');
-    return { year, month, day };
+    r.click(); r.dispatchEvent(new Event('input', { bubbles:true })); r.dispatchEvent(new Event('change', { bubbles:true })); return true;
   }
 
   function injectCss() {
-    if ($('#aft-master-style')) return;
-    const s = document.createElement('style'); s.id = 'aft-master-style';
-    s.textContent = `.aftm-panel{position:fixed;right:12px;bottom:12px;z-index:2147483647;width:350px;background:#111827;color:#fff;border-radius:10px;box-shadow:0 8px 24px #0006;font:12px/1.35 Arial,sans-serif;overflow:hidden}.aftm-head{padding:8px 10px;background:#002e36;font-weight:800;cursor:pointer}.aftm-body{padding:10px;display:grid;gap:8px}.aftm-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.aftm-panel input,.aftm-panel textarea,.aftm-panel select{box-sizing:border-box;width:100%;padding:6px;border-radius:6px;border:1px solid #64748b;background:#fff;color:#111}.aftm-panel button{padding:6px 9px;border-radius:6px;border:1px solid #64748b;cursor:pointer;font-weight:700}.aftm-row{display:flex;gap:6px}.aftm-row>*{flex:1}.aftm-status{min-height:16px;font-weight:700}.aftm-danger{background:#7f1d1d;color:#fff}.aftm-primary{background:#002e36;color:#fff}.aftm-tabs{display:flex;gap:5px}.aftm-tab.active{background:#0f766e;color:#fff}.aftm-hidden{display:none!important}`;
+    if ($('#aftm-style')) return;
+    const s = document.createElement('style'); s.id = 'aftm-style';
+    s.textContent = `
+      .aftm{position:fixed;z-index:2147483647;font:13px/1.35 Arial,sans-serif;box-shadow:0 8px 24px #0005}
+      .aftm *{box-sizing:border-box}.aftm button{cursor:pointer;font-weight:700}
+      .aftm input,.aftm textarea,.aftm select{width:100%;padding:7px;border:1px solid #789;border-radius:4px;background:#fff;color:#111}
+      #aftm-each{top:106px;left:18px;width:355px;background:#eef7fb;border:1px solid #174b57;border-radius:8px;overflow:hidden;color:#111}
+      #aftm-each .head,#aftm-sku .head{background:#003b45;color:#fff;padding:9px 12px;font-weight:800}
+      #aftm-each .body,#aftm-sku .body{padding:10px;display:grid;gap:8px}
+      #aftm-each .timer{display:flex;align-items:center;justify-content:space-between;gap:6px;background:#e8f6ff;border-bottom:1px solid #174b57;padding:8px 10px;font-weight:700}
+      #aftm-each .row,#aftm-sku .row{display:flex;gap:7px} #aftm-each .row>* ,#aftm-sku .row>*{flex:1}
+      #aftm-each .primary,#aftm-sku .primary{background:#003b45;color:#fff;border:0;padding:8px;border-radius:4px}
+      #aftm-each .danger,#aftm-sku .danger{background:#d94343;color:#fff;border:1px solid #b22;padding:7px;border-radius:6px}
+      #aftm-sku{right:12px;bottom:12px;width:350px;background:#111827;color:#fff;border-radius:10px;overflow:hidden}
+      #aftm-sku .tabs{display:flex;gap:6px} #aftm-sku .tabs button.active{background:#0f8f8f;color:#fff}
+      #aftm-sku label{display:grid;gap:3px;font-weight:700}.aftm-status{font-weight:700;min-height:17px}
+    `;
     document.documentElement.appendChild(s);
   }
-  class Panel {
-    constructor(id, title, html) {
-      injectCss(); this.el = document.createElement('section'); this.el.id = id; this.el.className = 'aftm-panel';
-      this.el.innerHTML = `<div class="aftm-head">${title} v${VERSION} ▴</div><div class="aftm-body">${html}</div>`;
-      (document.body || document.documentElement).appendChild(this.el);
-      const head = $('.aftm-head', this.el), body = $('.aftm-body', this.el);
-      head.onclick = () => { const open = body.style.display !== 'none'; body.style.display = open ? 'none' : 'grid'; head.textContent = `${title} v${VERSION} ${open ? '▾' : '▴'}`; };
-    }
-    q(s) { return $(s, this.el); }
-    qa(s) { return $$(s, this.el); }
-    remove() { this.el.remove(); }
-  }
 
-  const MoveItems = {
-    active: false, busy: false, lastKey: '', lastAt: 0,
-    match: () => /\/app\/moveitems/i.test(location.pathname), start() { this.refresh(); }, stop() { this.busy = false; },
-    async refresh() {
-      if (!this.active || this.busy || !/enter quantity/i.test(pageText())) return;
-      const qty = [...pageText().matchAll(/\bQuantity:\s*([0-9]{1,5})\b/gi)].map(m => +m[1]).filter(n => n > 0).at(-1);
-      const input = $$('input').filter(visible).find(i => /quantity|qty/i.test([i.id, i.name, i.placeholder, i.getAttribute('aria-label')].map(norm).join(' '))) || $$('input').filter(visible)[0];
-      if (!qty || !input) return;
-      const key = `${location.href}|${qty}|${pageText().slice(0, 240)}`;
-      if (key === this.lastKey && Date.now() - this.lastAt < 3000) return;
-      this.lastKey = key; this.lastAt = Date.now(); this.busy = true;
-      try { setValue(input, qty); await sleep(100); press(input, 'Enter'); await sleep(120); if (/enter quantity/i.test(pageText())) click(['continue', 'enter']); }
-      finally { this.busy = false; }
-    }
+  const Edit = {
+    active:false, mode:null, panel:null, running:false, token:0,
+    keys:{ q:'aftm_edit_q', active:'aftm_edit_active', done:'aftm_edit_done', total:'aftm_edit_total', state:'aftm_edit_state', disp:'aftm_edit_disp', sku:'aftm_edit_sku', exp:'aftm_exp_cfg', workflow:'aftm_workflow' },
+    match:()=>/\/app\/edititems/i.test(location.pathname),
+    detect(){ const t = pageText(); if (/\bMode\s*:\s*Each\b/i.test(t)) return 'each'; if (/\bMode\s*:\s*Sku\b/i.test(t)) return 'sku'; return null; },
+    start(){ this.refresh(); },
+    stop(){ this.token++; this.running=false; this.panel?.remove(); this.panel=null; },
+    refresh(){ const m = this.detect(); if (!m) return; if (m !== this.mode || !this.panel?.isConnected) { this.mode=m; this.render(); } if (localStorage.getItem(this.keys.active)==='1'&&!this.running) this.drive(); },
+    render(){ this.panel?.remove(); this.panel = this.mode === 'each' ? this.renderEach() : this.renderSku(); },
+    renderEach(){
+      const p=document.createElement('section'); p.id='aftm-each'; p.className='aftm';
+      p.innerHTML=`<div class="timer"><span>⚡ Smart Auto Timer: shared</span><button data-aggr>Toggle Aggressive</button><button class="danger" data-clear>CLEAR QUEUE</button></div><div class="head">Quick Flip ▾</div><div class="head" style="margin-top:1px">Multi Quick Flip ▴</div><div class="body"><label>Inventory State<select data-state><option>Sellable</option><option selected>Unsellable</option><option>Pending Research</option></select></label><label>Disposition<select data-disp><option>Amazon Damage</option><option>Defective</option><option>Distributor Damage</option><option>Expired</option></select></label><textarea data-list rows="6" placeholder="Paste:\nTOTE ASIN\nor\nTOTE ASIN FNSKU"></textarea><button class="primary" data-start>Start Multi Flip</button><div><b>Mode:</b> Each</div><button class="danger" data-clear2 style="width:118px">CLEAR QUEUE</button><div class="aftm-status" data-status>Idle</div></div>`;
+      document.body.appendChild(p);
+      $('[data-state]',p).value=localStorage.getItem(this.keys.state)||'Unsellable'; $('[data-disp]',p).value=localStorage.getItem(this.keys.disp)||'Amazon Damage';
+      $('[data-start]',p).onclick=()=>this.startEach(); $('[data-clear]',p).onclick=$('[data-clear2]',p).onclick=()=>this.clear('Queue cleared');
+      return p;
+    },
+    renderSku(){
+      const p=document.createElement('section'); p.id='aftm-sku'; p.className='aftm';
+      p.innerHTML=`<div class="head">AFT EditItems Master v${VERSION} ▴</div><div class="body"><div><b>SKU mode</b></div><div class="tabs"><button data-tab="flip" class="active">State / SKU Flip</button><button data-tab="exp">Expiration Queue</button></div><div data-flip><label>SKU / ASIN / FNSKU / FCSKU<input data-sku></label><label>Locations / containers / items<textarea data-list rows="6"></textarea></label><div class="row"><label>Desired state<select data-state><option>Sellable</option><option selected>Unsellable</option><option>Pending Research</option></select></label><label>Desired damage<select data-disp><option>Amazon Damage</option><option>Defective</option><option>Distributor Damage</option><option>Expired</option></select></label></div></div><div data-exp hidden><label>Containers<textarea data-cont rows="4"></textarea></label><label>ASINs<textarea data-asins rows="4"></textarea></label><label>Expiration date<input data-date type="date"></label><label><input data-pr type="checkbox" style="width:auto"> Pending Research → Sellable</label></div><div class="row"><button class="primary" data-start>START</button><button data-stop>STOP</button><button class="danger" data-clear>CLEAR QUEUE</button></div><div class="aftm-status" data-status>Idle</div></div>`;
+      document.body.appendChild(p);
+      const tab=(name)=>{ $('[data-flip]',p).hidden=name!=='flip'; $('[data-exp]',p).hidden=name!=='exp'; $('[data-tab="flip"]',p).classList.toggle('active',name==='flip'); $('[data-tab="exp"]',p).classList.toggle('active',name==='exp'); localStorage.setItem(this.keys.workflow,name); };
+      $('[data-tab="flip"]',p).onclick=()=>tab('flip'); $('[data-tab="exp"]',p).onclick=()=>tab('exp'); tab(localStorage.getItem(this.keys.workflow)||'flip');
+      $('[data-start]',p).onclick=()=>($('[data-exp]',p).hidden?this.startSku():this.startExpiration()); $('[data-stop]',p).onclick=()=>{this.token++;this.running=false;this.status('Stopped')}; $('[data-clear]',p).onclick=()=>this.clear('Queue cleared');
+      return p;
+    },
+    status(t){ const el=this.panel&&$('[data-status]',this.panel); if(el)el.textContent=t; },
+    queue(){ try { const q=JSON.parse(localStorage.getItem(this.keys.q)||'[]'); return Array.isArray(q)?q:[]; } catch { return []; } },
+    saveQueue(q){ localStorage.setItem(this.keys.q,JSON.stringify(q)); },
+    clear(msg='Idle'){ this.token++;this.running=false;[this.keys.q,this.keys.active,this.keys.done,this.keys.total].forEach(k=>localStorage.removeItem(k));this.status(msg); },
+    begin(items,meta){ this.saveQueue(items);localStorage.setItem(this.keys.done,'0');localStorage.setItem(this.keys.total,String(items.length));localStorage.setItem(this.keys.active,'1');localStorage.setItem('aftm_edit_meta',JSON.stringify(meta));this.drive(); },
+    startEach(){ const lines=$('[data-list]',this.panel).value.split(/\r?\n/).map(norm).filter(Boolean).map(line=>{const [location,asin,fnsku]=line.split(/\s+/);return{location,asin,fnsku:fnsku||asin}}).filter(x=>x.location&&x.asin); if(!lines.length){this.status('Paste TOTE ASIN rows');return} const state=$('[data-state]',this.panel).value,disp=$('[data-disp]',this.panel).value;localStorage.setItem(this.keys.state,state);localStorage.setItem(this.keys.disp,disp);this.begin(lines,{type:'each',state,disp}); },
+    startSku(){ const sku=norm($('[data-sku]',this.panel).value),list=$('[data-list]',this.panel).value.split(/\r?\n/).map(norm).filter(Boolean),state=$('[data-state]',this.panel).value,disp=$('[data-disp]',this.panel).value;if(!sku||!list.length){this.status('Need SKU and locations');return}this.begin(list.map(location=>({location,sku})),{type:'sku',state,disp}); },
+    startExpiration(){ const containers=$('[data-cont]',this.panel).value.split(/\r?\n/).map(norm).filter(Boolean),asins=$('[data-asins]',this.panel).value.split(/\r?\n/).map(norm).filter(Boolean),date=$('[data-date]',this.panel).value,pr=$('[data-pr]',this.panel).checked;if(!containers.length||!asins.length||!date){this.status('Need containers, ASINs and date');return}const items=[];for(const location of containers)for(const asin of asins)items.push({location,asin});this.begin(items,{type:'expiration',date,pr}); },
+    step(){ const h=low(heading()),t=low(pageText()); if(t.includes('service failed')||t.includes('work is errored'))return'error';if(t.includes('success')&&t.includes('start over'))return'success';if(h.includes('confirm change')||t.includes('confirm change'))return'confirm';if(h.includes('select new disposition')||t.includes('select new disposition'))return'newDisp';if(h.includes('select new inventory state')||t.includes('select new inventory state'))return'newState';if(h.includes('select source disposition')||t.includes('select source disposition'))return'sourceDisp';if(h.includes('select source inventory state')||t.includes('select source inventory state'))return'sourceState';if(h.includes('expiration')||t.includes('expiration date'))return'expiration';if(h.includes('input fnsku')||h.includes('input fcsku')||t.includes('input fnsku or fcsku')||t.includes('scan item'))return'item';if(h.includes('scan location')||t.includes('scan location')||t.includes('scan container'))return'location';return'unknown'; },
+    async drive(){ if(this.running)return;this.running=true;const tok=++this.token;try{while(this.active&&localStorage.getItem(this.keys.active)==='1'&&this.token===tok){const q=this.queue();if(!q.length){this.clear('Complete');break}const meta=JSON.parse(localStorage.getItem('aftm_edit_meta')||'{}'),current=q[0],step=this.step();this.status(`${meta.type||this.mode} • ${step} • ${q.length} remaining`);if(step==='error'){click(['start over'],'.aftm')||press(document,'r')}else if(step==='location'){const i=await waitFor(()=>inputOutside('.aftm'),10000,90,()=>this.token,tok);if(!i)break;setValue(i,current.location);press(i,'Enter')}else if(step==='item'){const value=meta.type==='sku'?current.sku:(current.fnsku||current.asin),i=await waitFor(()=>inputOutside('.aftm'),10000,90,()=>this.token,tok);if(!i)break;setValue(i,value);press(i,'Enter')}else if(step==='sourceState'){chooseRadio(meta.pr?'Pending Research':'Sellable')||chooseRadio('Unsellable');click(['continue'],'.aftm')}else if(step==='sourceDisp'){chooseRadio('Amazon Damage')||chooseRadio('Defective')||chooseRadio('Expired');click(['continue'],'.aftm')}else if(step==='newState'){chooseRadio(meta.type==='expiration'?'Sellable':meta.state);click(['continue'],'.aftm')}else if(step==='newDisp'){if(meta.type!=='expiration'&&low(meta.state)==='unsellable')chooseRadio(meta.disp);click(['continue'],'.aftm')}else if(step==='expiration'){const dateInput=$$('input[type="date"],input').filter(visible).find(i=>!i.closest('.aftm')&&/date|expir/i.test([i.id,i.name,i.placeholder,i.getAttribute('aria-label')].map(norm).join(' ')))||inputOutside('.aftm');if(dateInput){setValue(dateInput,meta.date);click(['save','continue','confirm'],'.aftm')||press(dateInput,'Enter')}}else if(step==='confirm'){click(['change items','confirm','continue'],'.aftm')||press(document,'Enter')}else if(step==='success'){click(['start over'],'.aftm')||press(document,'r');q.shift();this.saveQueue(q);localStorage.setItem(this.keys.done,String(+(localStorage.getItem(this.keys.done)||0)+1))}await sleep(350)}}finally{this.running=false}}
   };
 
-  const FcSku = {
-    active: false, running: false, token: 0, panel: null,
-    k: { old: 'aftm_fc_old', next: 'aftm_fc_new', loc: 'aftm_fc_loc', queue: 'aftm_fc_q', done: 'aftm_fc_done', total: 'aftm_fc_total', active: 'aftm_fc_active' },
-    match: () => /\/app\/fcskuflip/i.test(location.pathname), start() { this.ensure(); this.resume(); }, stop() { this.token++; this.running = false; this.panel?.remove(); this.panel = null; },
-    ensure() {
-      if (this.panel?.el.isConnected || !document.body) return;
-      this.panel = new Panel('aftm-fcsku', 'FcSku Multi Flip', `<label>Old FNSKU/FCSKU<input data-old></label><label>New FNSKU/FCSKU<input data-new></label><label>Containers / locations<textarea data-loc rows="6"></textarea></label><div class="aftm-row"><button data-start class="aftm-primary">START</button><button data-stop>STOP</button><button data-clear class="aftm-danger">CLEAR</button></div><div class="aftm-status" data-status>Idle</div>`);
-      this.panel.q('[data-old]').value = store.get(this.k.old); this.panel.q('[data-new]').value = store.get(this.k.next); this.panel.q('[data-loc]').value = store.get(this.k.loc);
-      this.panel.q('[data-start]').onclick = () => this.startRun(); this.panel.q('[data-stop]').onclick = () => { this.token++; this.running = false; this.status('Stopped'); }; this.panel.q('[data-clear]').onclick = () => this.clear();
-      ['[data-old]', '[data-new]', '[data-loc]'].forEach(s => this.panel.q(s).addEventListener('input', () => this.saveFields())); this.update();
-    },
-    saveFields() { store.set(this.k.old, norm(this.panel.q('[data-old]').value)); store.set(this.k.next, norm(this.panel.q('[data-new]').value)); store.set(this.k.loc, this.panel.q('[data-loc]').value); },
-    queue() { return store.json(this.k.queue, []); }, saveQueue(q) { store.setJson(this.k.queue, q); this.update(); }, status(t) { if (this.panel) this.panel.q('[data-status]').textContent = t; },
-    update() { const q = this.queue(), d = +store.get(this.k.done, 0), t = +store.get(this.k.total, 0); this.status(store.get(this.k.active) === '1' ? `${d}/${t} complete • ${q.length} remaining` : 'Idle'); },
-    clear() { this.token++; this.running = false; store.del(this.k.queue, this.k.done, this.k.total, this.k.active); this.status('Queue cleared'); },
-    startRun() { this.saveFields(); const old = store.get(this.k.old), next = store.get(this.k.next), q = this.panel.q('[data-loc]').value.split(/\r?\n/).map(norm).filter(Boolean); if (!old || !next || !q.length) { this.status('Need old, new and container list'); return; } this.saveQueue(q); store.set(this.k.done, 0); store.set(this.k.total, q.length); store.set(this.k.active, 1); this.drive(); },
-    resume() { if (store.get(this.k.active) === '1' && this.queue().length) this.drive(); },
-    kind() { const h = low(heading()), t = low(pageText()); if ((t.includes('success') && t.includes('start over')) || h === 'success') return 'success'; if (h.includes('scan container') || t.includes('scan container')) return 'container'; if (h.includes('enter new fnsku') || h.includes('enter new fcsku') || t.includes('enter new fnsku') || t.includes('enter new fcsku')) return 'new'; if (h.includes('input item') || t.includes('fnskus, fcskus, and lpns are supported')) return 'old'; if (h.includes('confirm flip') || t.includes('confirm flip')) return 'confirm'; return 'unknown'; },
-    async drive() {
-      if (this.running) return; this.running = true; const tok = ++this.token;
-      try { while (this.active && store.get(this.k.active) === '1' && this.token === tok) {
-        const q = this.queue(); if (!q.length) { this.clear(); this.status('Complete'); break; }
-        const old = store.get(this.k.old), next = store.get(this.k.next), loc = q[0], k = this.kind(); this.status(`${k} • ${q.length} remaining`);
-        if (k === 'old' || k === 'new' || k === 'container') { const i = await waitFor(() => textInput('#aftm-fcsku'), 10000, 80, () => this.token, tok); if (!i) break; setValue(i, k === 'old' ? old : k === 'new' ? next : loc); press(i, 'Enter'); }
-        else if (k === 'confirm') { if (!click(['confirm'], '#aftm-fcsku')) press(document, 'Enter'); }
-        else if (k === 'success') { click(['start over'], '#aftm-fcsku') || press(document, 'r'); q.shift(); this.saveQueue(q); store.set(this.k.done, +store.get(this.k.done, 0) + 1); }
-        await sleep(350);
-      }} finally { this.running = false; this.update(); }
-    }
-  };
+  const MoveItems={active:false,busy:false,last:'',match:()=>/\/app\/moveitems/i.test(location.pathname),start(){this.refresh()},stop(){this.busy=false},async refresh(){if(!this.active||this.busy||!/enter quantity/i.test(pageText()))return;const qty=[...pageText().matchAll(/\bQuantity:\s*([0-9]{1,5})\b/gi)].map(m=>+m[1]).filter(n=>n>0).at(-1),i=$$('input').filter(visible).find(x=>/quantity|qty/i.test([x.id,x.name,x.placeholder].map(norm).join(' ')))||$$('input').filter(visible)[0];if(!qty||!i)return;const k=`${location.href}|${qty}`;if(k===this.last)return;this.last=k;this.busy=true;try{setValue(i,qty);await sleep(100);press(i,'Enter');await sleep(120);if(/enter quantity/i.test(pageText()))click(['continue','enter'])}finally{this.busy=false}}};
 
-  const EditItems = {
-    active: false, running: false, token: 0, panel: null, mode: null, workflow: 'flip',
-    k: { queue: 'aftm_edit_q', active: 'aftm_edit_active', done: 'aftm_edit_done', total: 'aftm_edit_total', state: 'aftm_edit_state', disp: 'aftm_edit_disp', sku: 'aftm_edit_sku', expContainers: 'aftm_exp_containers', expAsins: 'aftm_exp_asins', expDate: 'aftm_exp_date', expPending: 'aftm_exp_pending' },
-    match: () => /\/app\/edititems/i.test(location.pathname),
-    detect() { const t = pageText(); if (/\bMode\s*:\s*Each\b/i.test(t)) return 'each'; if (/\bMode\s*:\s*Sku\b/i.test(t)) return 'sku'; return null; },
-    start() { this.ensure(); this.refresh(); }, stop() { this.token++; this.running = false; this.panel?.remove(); this.panel = null; },
-    refresh() { const m = this.detect(); if (!m) return; this.mode = m; this.ensure(); this.panel.q('[data-mode]').textContent = m === 'each' ? 'EACH mode' : 'SKU mode'; if (store.get(this.k.active) === '1' && !this.running) this.drive(); },
-    ensure() {
-      if (this.panel?.el.isConnected || !document.body) return;
-      this.panel = new Panel('aftm-edit', 'AFT EditItems Master', `<div data-mode>Detecting mode…</div><div class="aftm-tabs"><button class="aftm-tab active" data-tab="flip">State / SKU Flip</button><button class="aftm-tab" data-tab="expiration">Expiration Queue</button></div><div data-view="flip"><label>SKU / ASIN / FNSKU / FCSKU<input data-sku></label><label>Locations / containers / items<textarea data-list rows="5"></textarea></label><div class="aftm-grid"><label>Desired state<select data-state><option>Sellable</option><option selected>Unsellable</option><option>Pending Research</option></select></label><label>Desired damage<select data-disp><option>Amazon Damage</option><option>Defective</option><option>Distributor Damage</option><option>Expired</option></select></label></div></div><div data-view="expiration" class="aftm-hidden"><label>Containers<textarea data-exp-containers rows="5"></textarea></label><label>ASIN(s) — one per line<textarea data-exp-asins rows="4"></textarea></label><div class="aftm-grid"><label>Expiration date<input data-exp-date type="date"></label><label style="align-self:end"><input data-exp-pending type="checkbox" style="width:auto"> Pending Research → Sellable</label></div></div><div class="aftm-row"><button data-start class="aftm-primary">START</button><button data-stop>STOP</button><button data-clear class="aftm-danger">CLEAR QUEUE</button></div><div class="aftm-status" data-status>Idle</div>`);
-      this.panel.q('[data-sku]').value = store.get(this.k.sku); this.panel.q('[data-state]').value = store.get(this.k.state, 'Unsellable'); this.panel.q('[data-disp]').value = store.get(this.k.disp, 'Amazon Damage'); this.panel.q('[data-exp-containers]').value = store.get(this.k.expContainers); this.panel.q('[data-exp-asins]').value = store.get(this.k.expAsins); this.panel.q('[data-exp-date]').value = store.get(this.k.expDate); this.panel.q('[data-exp-pending]').checked = store.get(this.k.expPending) === '1';
-      this.panel.qa('[data-tab]').forEach(b => b.onclick = () => this.setWorkflow(b.dataset.tab));
-      this.panel.q('[data-start]').onclick = () => this.startRun(); this.panel.q('[data-stop]').onclick = () => { this.token++; this.running = false; this.status('Stopped'); }; this.panel.q('[data-clear]').onclick = () => this.clear();
-      this.setWorkflow('flip');
-    },
-    setWorkflow(name) { this.workflow = name; this.panel.qa('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name)); this.panel.qa('[data-view]').forEach(v => v.classList.toggle('aftm-hidden', v.dataset.view !== name)); },
-    status(t) { if (this.panel) this.panel.q('[data-status]').textContent = t; }, queue() { return store.json(this.k.queue, []); }, saveQueue(q) { store.setJson(this.k.queue, q); },
-    clear() { this.token++; this.running = false; store.del(this.k.queue, this.k.active, this.k.done, this.k.total, 'aftm_edit_workflow'); this.status('Queue cleared'); },
-    startRun() {
-      this.mode = this.detect(); if (!this.mode) { this.status('Mode not detected'); return; }
-      if (this.workflow === 'expiration') return this.startExpiration();
-      const sku = norm(this.panel.q('[data-sku]').value), list = this.panel.q('[data-list]').value.split(/\r?\n/).map(norm).filter(Boolean), state = this.panel.q('[data-state]').value, disp = this.panel.q('[data-disp]').value;
-      if (this.mode === 'sku' && !sku) { this.status('SKU required for Mode: Sku'); return; } if (!list.length) { this.status('Need at least one location/item'); return; }
-      store.set(this.k.sku, sku); store.set(this.k.state, state); store.set(this.k.disp, disp); this.saveQueue(list.map(v => ({ type: 'flip', value: v }))); store.set(this.k.done, 0); store.set(this.k.total, list.length); store.set(this.k.active, 1); store.set('aftm_edit_workflow', 'flip'); this.drive();
-    },
-    startExpiration() {
-      const containers = this.panel.q('[data-exp-containers]').value.split(/\r?\n/).map(norm).filter(Boolean);
-      const asins = this.panel.q('[data-exp-asins]').value.split(/\r?\n/).map(norm).filter(Boolean);
-      const date = this.panel.q('[data-exp-date]').value; const pending = this.panel.q('[data-exp-pending]').checked;
-      if (!containers.length || !asins.length || !/^\d{4}-\d{2}-\d{2}$/.test(date)) { this.status('Need container(s), ASIN(s) and date'); return; }
-      const queue = []; for (const container of containers) for (const asin of asins) queue.push({ type: 'expiration', container, asin, date, pending });
-      store.set(this.k.expContainers, this.panel.q('[data-exp-containers]').value); store.set(this.k.expAsins, this.panel.q('[data-exp-asins]').value); store.set(this.k.expDate, date); store.set(this.k.expPending, pending ? 1 : 0);
-      this.saveQueue(queue); store.set(this.k.done, 0); store.set(this.k.total, queue.length); store.set(this.k.active, 1); store.set('aftm_edit_workflow', 'expiration'); this.drive();
-    },
-    step() {
-      const h = low(heading()), t = low(pageText());
-      if (t.includes('the work is errored') || t.includes('service failed to process your request')) return 'error';
-      if (t.includes('success') && t.includes('start over')) return 'success';
-      if (h.includes('confirm change') || t.includes('confirm change')) return 'confirm';
-      if (h.includes('select new disposition') || t.includes('select new disposition')) return 'newDisp';
-      if (h.includes('select new inventory state') || t.includes('select new inventory state')) return 'newState';
-      if (h.includes('select source disposition') || t.includes('select source disposition')) return 'sourceDisp';
-      if (h.includes('select source inventory state') || t.includes('select source inventory state')) return 'sourceState';
-      if (h.includes('expiration') || t.includes('expiration date') || t.includes('expiry date')) return 'expiration';
-      if (h.includes('input fnsku') || h.includes('input fcsku') || t.includes('input fnsku or fcsku') || t.includes('scan item')) return 'item';
-      if (h.includes('scan location') || t.includes('scan location') || t.includes('scan container')) return 'location';
-      return 'unknown';
-    },
-    async drive() {
-      if (this.running) return; this.running = true; const tok = ++this.token;
-      try { while (this.active && store.get(this.k.active) === '1' && this.token === tok) {
-        const q = this.queue(); if (!q.length) { this.clear(); this.status('Complete'); break; }
-        const job = q[0], step = this.step(), workflow = store.get('aftm_edit_workflow', job.type || 'flip'); this.workflow = workflow;
-        this.status(`${workflow.toUpperCase()} • ${step} • ${q.length} remaining`);
-        if (step === 'error') click(['start over'], '#aftm-edit') || press(document, 'r');
-        else if (step === 'location') { const i = await waitFor(() => textInput('#aftm-edit'), 10000, 80, () => this.token, tok); if (!i) break; setValue(i, workflow === 'expiration' ? job.container : job.value); press(i, 'Enter'); }
-        else if (step === 'item') { const value = workflow === 'expiration' ? job.asin : (this.mode === 'sku' ? store.get(this.k.sku) : job.value); const i = await waitFor(() => textInput('#aftm-edit'), 10000, 80, () => this.token, tok); if (!i) break; setValue(i, value); press(i, 'Enter'); }
-        else if (step === 'sourceState') { chooseRadio(workflow === 'expiration' && job.pending ? 'Pending Research' : 'Sellable') || chooseRadio('Unsellable') || chooseRadio('Pending Research'); click(['continue'], '#aftm-edit'); }
-        else if (step === 'sourceDisp') { chooseRadio('Amazon Damage') || chooseRadio('Defective') || chooseRadio('Distributor Damage') || chooseRadio('Expired'); click(['continue'], '#aftm-edit'); }
-        else if (step === 'newState') { chooseRadio(workflow === 'expiration' ? 'Sellable' : store.get(this.k.state, 'Unsellable')); click(['continue'], '#aftm-edit'); }
-        else if (step === 'newDisp') { if (workflow !== 'expiration' && low(store.get(this.k.state)) === 'unsellable') chooseRadio(store.get(this.k.disp, 'Amazon Damage')); click(['continue'], '#aftm-edit'); }
-        else if (step === 'expiration') {
-          const [y, m, d] = job.date.split('-'); const parts = dateInputs();
-          if (parts.year && parts.month && parts.day) { setValue(parts.year, y); setValue(parts.month, String(+m)); setValue(parts.day, String(+d)); }
-          else { const i = textInput('#aftm-edit'); if (i) setValue(i, `${m}/${d}/${y}`); }
-          click(['save', 'continue', 'confirm'], '#aftm-edit') || press(document, 'Enter');
-        }
-        else if (step === 'confirm') click(['change items', 'confirm', 'continue'], '#aftm-edit') || press(document, 'Enter');
-        else if (step === 'success') { click(['start over'], '#aftm-edit') || press(document, 'r'); q.shift(); this.saveQueue(q); store.set(this.k.done, +store.get(this.k.done, 0) + 1); }
-        await sleep(350);
-      }} finally { this.running = false; }
-    }
-  };
-
-  const modules = [MoveItems, FcSku, EditItems]; let routeTimer = 0;
-  function route() { clearTimeout(routeTimer); routeTimer = setTimeout(() => { for (const m of modules) { const yes = m.match(); if (yes && !m.active) { m.active = true; m.start(); } else if (!yes && m.active) { m.active = false; m.stop?.(); } else if (yes) m.refresh?.(); } }, 80); }
-  function start() { const mo = new MutationObserver(route); mo.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); window.addEventListener('hashchange', route, true); window.addEventListener('popstate', route, true); window.addEventListener('focus', route, true); route(); console.log(`AFT Tools Master CLEAN TEST v${VERSION} loaded`); }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true }); else start();
+  const FcSku={active:false,match:()=>/\/app\/fcskuflip/i.test(location.pathname),start(){console.log('AFT Master FcSku module active')},stop(){}};
+  const modules=[Edit,MoveItems,FcSku];let timer=0;
+  function route(){clearTimeout(timer);timer=setTimeout(()=>{for(const m of modules){const yes=m.match();if(yes&&!m.active){m.active=true;m.start()}else if(!yes&&m.active){m.active=false;m.stop?.()}else if(yes)m.refresh?.()}},80)}
+  function start(){injectCss();const mo=new MutationObserver(route);mo.observe(document.documentElement,{childList:true,subtree:true,characterData:true});window.addEventListener('hashchange',route,true);window.addEventListener('popstate',route,true);window.addEventListener('focus',route,true);route();console.log(`AFT Tools Master CLEAN TEST v${VERSION} loaded`)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
 })();
