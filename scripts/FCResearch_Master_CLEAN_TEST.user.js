@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v0.1.3 FCResearch Master CLEAN TEST
+// @name         v0.1.4 FCResearch Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.3
+// @version      0.1.4
 // @description  CLEAN TEST master for FCResearch print, product, hazmat, size, and PO highlighting tools.
 // @include      /^https?:\/\/.*fcresearch.*\//
 // @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
@@ -18,10 +18,10 @@
 (() => {
   'use strict';
 
-  if (window.__fcrMasterCleanTest_v013) return;
-  window.__fcrMasterCleanTest_v013 = true;
+  if (window.__fcrMasterCleanTest_v014) return;
+  window.__fcrMasterCleanTest_v014 = true;
 
-  const VERSION = '0.1.3';
+  const VERSION = '0.1.4';
   const UI_ATTR = 'data-fcr-master-ui';
   const UI_SELECTOR = `[${UI_ATTR}]`;
   const MARKETPLACE = 'AU';
@@ -136,43 +136,6 @@
     }
   }
 
-  function poIntFrom(cell) {
-    const raw = cell?.querySelector?.("input,[contenteditable='true']")?.value ?? cell?.textContent ?? '';
-    const match = String(raw).replace(/[, ]+/g, '').match(/-?\d+/);
-    return match ? parseInt(match[0], 10) : 0;
-  }
-
-  function poDateFromCell(cell) {
-    const match = clean(cell?.textContent).match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/);
-    if (!match) return null;
-    return new Date(+match[1], +match[2] - 1, +match[3], +(match[4] || 0), +(match[5] || 0), +(match[6] || 0));
-  }
-
-  function paintPurchaseOrders() {
-    const body = $('table#table-purchase-order-item');
-    if (!body) return;
-    const wrap = body.closest('.dataTables_scroll');
-    const head = $('.dataTables_scrollHead table', wrap) || body;
-    const headers = $$('thead th,thead td', head).map(cell => norm(cell.textContent).replace(/\(.*?\)/g, '').trim());
-    const idxU = headers.findIndex(value => value.includes('unfilled'));
-    const idxC = headers.findIndex(value => /canceled|cancelled/.test(value));
-    const idxD = headers.findIndex(value => value.includes('order date') || value === 'date');
-    const six = new Date();
-    six.setMonth(six.getMonth() - 6);
-    const seven = new Date();
-    seven.setMonth(seven.getMonth() - 7);
-    for (const row of [...(body.tBodies[0] || body).rows]) {
-      const cells = [...row.cells];
-      cells.forEach(cell => cell.classList.remove('poch__unfilled', 'poch__cancelled', 'poch__band', 'poch__dateold'));
-      const dateCell = idxD >= 0 ? cells[idxD] : null;
-      const date = poDateFromCell(dateCell);
-      if (date && date < six) for (let offset = 0; offset <= 2; offset++) cells[idxD - offset]?.classList.add('poch__band');
-      if (dateCell && date && date < seven) dateCell.classList.add('poch__dateold');
-      if (idxU >= 0 && poIntFrom(cells[idxU]) > 0) cells[idxU]?.classList.add('poch__unfilled');
-      if (idxC >= 0 && poIntFrom(cells[idxC]) > 0) cells[idxC]?.classList.add('poch__cancelled');
-    }
-  }
-
   function injectStyles() {
     if ($('#fcrm-clean-style')) return;
     const style = document.createElement('style');
@@ -214,6 +177,101 @@
       [${UI_ATTR}]::selection, [${UI_ATTR}] *::selection { background:transparent!important; color:inherit!important; }
     `;
     document.documentElement.appendChild(style);
+  }
+
+  function poIntFrom(cell) {
+    const raw = cell?.querySelector?.("input,[contenteditable='true']")?.value ?? cell?.textContent ?? '';
+    const match = String(raw).replace(/[, ]+/g, '').match(/-?\d+/);
+    return match ? parseInt(match[0], 10) : 0;
+  }
+
+  function poDateFromCell(cell) {
+    const raw = clean(cell?.textContent || '');
+    const match = raw.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/);
+    if (!match) return null;
+    return new Date(+match[1], +match[2] - 1, +match[3], +(match[4] || 0), +(match[5] || 0), +(match[6] || 0));
+  }
+
+  function poIndexes(head) {
+    const headers = $$(':scope > thead th, :scope > thead td, :scope > tr th', head)
+      .map(cell => norm(cell.textContent).replace(/\(.*?\)/g, '').trim());
+    return {
+      idxU: headers.findIndex(value => value.includes('unfilled')),
+      idxC: headers.findIndex(value => value.includes('canceled') || value.includes('cancelled')),
+      idxDate: headers.findIndex(value => value.includes('order date') || value === 'date')
+    };
+  }
+
+  function paintPurchaseOrders(body, idxU, idxC, idxDate) {
+    if (!body?.isConnected) return;
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const sevenMonthsAgo = new Date();
+    sevenMonthsAgo.setMonth(sevenMonthsAgo.getMonth() - 7);
+    const tableBody = body.tBodies[0] || body;
+
+    for (const row of tableBody.rows) {
+      const cells = [...row.cells];
+      for (const cell of cells) cell.classList?.remove('poch__unfilled', 'poch__cancelled', 'poch__dateold', 'poch__band');
+
+      const dateCell = idxDate >= 0 ? cells[idxDate] : null;
+      const date = dateCell ? poDateFromCell(dateCell) : null;
+      if (date && date < sixMonthsAgo) {
+        for (let offset = 0; offset <= 2; offset++) cells[idxDate - offset]?.classList.add('poch__band');
+      }
+      if (dateCell && date && date < sevenMonthsAgo) dateCell.classList.add('poch__dateold');
+
+      const unfilledCell = idxU >= 0 ? cells[idxU] : null;
+      if (unfilledCell?.tagName === 'TD' && poIntFrom(unfilledCell) > 0) unfilledCell.classList.add('poch__unfilled');
+
+      const cancelledCell = idxC >= 0 ? cells[idxC] : null;
+      if (cancelledCell?.tagName === 'TD' && poIntFrom(cancelledCell) > 0) cancelledCell.classList.add('poch__cancelled');
+    }
+  }
+
+  let poBody = null;
+  let poObserver = null;
+  let poPaintTimer = 0;
+
+  function wirePurchaseOrderHighlighter() {
+    const body = $('table#table-purchase-order-item');
+    if (!body) return false;
+    const wrap = body.closest('div.dataTables_scroll');
+    const head = wrap?.querySelector('.dataTables_scrollHead thead')?.closest('table') || body;
+    const { idxU, idxC, idxDate } = poIndexes(head);
+    if (idxU < 0 && idxC < 0 && idxDate < 0) return false;
+
+    paintPurchaseOrders(body, idxU, idxC, idxDate);
+    const tableBody = body.tBodies[0] || body;
+    if (poBody === tableBody && poObserver) return true;
+
+    poObserver?.disconnect();
+    poBody = tableBody;
+    poObserver = new MutationObserver(() => {
+      clearTimeout(poPaintTimer);
+      poPaintTimer = setTimeout(() => paintPurchaseOrders(body, idxU, idxC, idxDate), 60);
+    });
+    poObserver.observe(tableBody, { childList: true });
+    return true;
+  }
+
+  function startPurchaseOrderHighlighter() {
+    let tries = 0;
+    const retry = setInterval(() => {
+      if (wirePurchaseOrderHighlighter() || tries++ > 40) clearInterval(retry);
+    }, 250);
+
+    const discovery = new MutationObserver(() => {
+      if (!poBody?.isConnected) wirePurchaseOrderHighlighter();
+    });
+    discovery.observe(document.documentElement, { childList: true, subtree: true });
+
+    window.addEventListener('pagehide', () => {
+      clearInterval(retry);
+      clearTimeout(poPaintTimer);
+      poObserver?.disconnect();
+      discovery.disconnect();
+    }, { once: true });
   }
 
   function findProductTable() {
@@ -842,7 +900,6 @@
     if (refreshBusy) { refreshPending = true; return; }
     refreshBusy = true;
     try {
-      paintPurchaseOrders();
       const panel = readProductPanel();
       if (panel) {
         const changed = panel.signature !== lastProductSignature;
@@ -883,6 +940,7 @@
   }
 
   injectStyles();
+  startPurchaseOrderHighlighter();
   installCopyCleaner();
   installAltPrint();
   startObserver();
