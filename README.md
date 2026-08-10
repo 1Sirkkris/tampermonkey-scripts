@@ -61,7 +61,7 @@ Use these instead of their overlapping standalone scripts—not alongside them.
 | Script | Version | Replaces / overlaps | Install |
 |---|---:|---|---|
 | AFT Tools Master CLEAN TEST | 0.2.0 | EditItems, FcSku Flip and MoveItems helpers | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/AFT_Tools_Master_CLEAN_TEST.user.js) |
-| FCResearch Master CLEAN TEST | 0.1.3 | Multiprint/PanDash, Highlighter/Madcat, Sideline Size and PO Cell Highlighter | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Master_CLEAN_TEST.user.js) |
+| FCResearch Master CLEAN TEST | 0.1.4 | Multiprint/PanDash, Highlighter/Madcat, Sideline Size and PO Cell Highlighter | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Master_CLEAN_TEST.user.js) |
 | FCResearch Scan Flow CLEAN TEST | 0.1.1 | FCResearch Scan Flow | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_PO_Scan_CLEAN_TEST.user.js) |
 | SidelineApp Helper CLEAN TEST | 1.4.3 | SidelineApp Helper | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Helper_CLEAN_TEST.user.js) |
 | Stow Andons Helper — Safe Trim TEST | 5.4.5-test | Stow Andons Helper | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Stow_Andons_Helper_v5.4_TEST.user.js) |
