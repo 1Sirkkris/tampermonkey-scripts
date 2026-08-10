@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v0.1.2 FCResearch Master CLEAN TEST
+// @name         v0.1.3 FCResearch Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.2
-// @description  CLEAN TEST merging Multiprint + PanDash with Highlighter + Madcat + Sideline Size. Existing scripts remain untouched.
+// @version      0.1.3
+// @description  CLEAN TEST master for FCResearch print, product, hazmat, size, and PO highlighting tools.
 // @include      /^https?:\/\/.*fcresearch.*\//
 // @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/FCResearch_Master_CLEAN_TEST.user.js
@@ -18,10 +18,10 @@
 (() => {
   'use strict';
 
-  if (window.__fcrMasterCleanTest_v012) return;
-  window.__fcrMasterCleanTest_v012 = true;
+  if (window.__fcrMasterCleanTest_v013) return;
+  window.__fcrMasterCleanTest_v013 = true;
 
-  const VERSION = '0.1.2';
+  const VERSION = '0.1.3';
   const UI_ATTR = 'data-fcr-master-ui';
   const UI_SELECTOR = `[${UI_ATTR}]`;
   const MARKETPLACE = 'AU';
@@ -136,12 +136,53 @@
     }
   }
 
+  function poIntFrom(cell) {
+    const raw = cell?.querySelector?.("input,[contenteditable='true']")?.value ?? cell?.textContent ?? '';
+    const match = String(raw).replace(/[, ]+/g, '').match(/-?\d+/);
+    return match ? parseInt(match[0], 10) : 0;
+  }
+
+  function poDateFromCell(cell) {
+    const match = clean(cell?.textContent).match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/);
+    if (!match) return null;
+    return new Date(+match[1], +match[2] - 1, +match[3], +(match[4] || 0), +(match[5] || 0), +(match[6] || 0));
+  }
+
+  function paintPurchaseOrders() {
+    const body = $('table#table-purchase-order-item');
+    if (!body) return;
+    const wrap = body.closest('.dataTables_scroll');
+    const head = $('.dataTables_scrollHead table', wrap) || body;
+    const headers = $$('thead th,thead td', head).map(cell => norm(cell.textContent).replace(/\(.*?\)/g, '').trim());
+    const idxU = headers.findIndex(value => value.includes('unfilled'));
+    const idxC = headers.findIndex(value => /canceled|cancelled/.test(value));
+    const idxD = headers.findIndex(value => value.includes('order date') || value === 'date');
+    const six = new Date();
+    six.setMonth(six.getMonth() - 6);
+    const seven = new Date();
+    seven.setMonth(seven.getMonth() - 7);
+    for (const row of [...(body.tBodies[0] || body).rows]) {
+      const cells = [...row.cells];
+      cells.forEach(cell => cell.classList.remove('poch__unfilled', 'poch__cancelled', 'poch__band', 'poch__dateold'));
+      const dateCell = idxD >= 0 ? cells[idxD] : null;
+      const date = poDateFromCell(dateCell);
+      if (date && date < six) for (let offset = 0; offset <= 2; offset++) cells[idxD - offset]?.classList.add('poch__band');
+      if (dateCell && date && date < seven) dateCell.classList.add('poch__dateold');
+      if (idxU >= 0 && poIntFrom(cells[idxU]) > 0) cells[idxU]?.classList.add('poch__unfilled');
+      if (idxC >= 0 && poIntFrom(cells[idxC]) > 0) cells[idxC]?.classList.add('poch__cancelled');
+    }
+  }
+
   function injectStyles() {
     if ($('#fcrm-clean-style')) return;
     const style = document.createElement('style');
     style.id = 'fcrm-clean-style';
     style.textContent = `
       [${UI_ATTR}], [${UI_ATTR}] * { box-sizing:border-box; }
+      td.poch__unfilled { background:rgba(255,193,7,.28)!important; box-shadow:inset 0 0 0 2px rgba(255,180,0,.50); font-weight:600; }
+      td.poch__cancelled { background:rgba(220,53,69,.24)!important; box-shadow:inset 0 0 0 2px rgba(220,53,69,.45); font-weight:600; }
+      td.poch__band { background:rgba(255,0,0,.14)!important; box-shadow:inset 0 0 0 1px rgba(255,0,0,.22); color:#5a0000; }
+      td.poch__dateold { background:rgba(255,0,0,.22)!important; box-shadow:inset 0 0 0 1px rgba(255,0,0,.38)!important; font-weight:700; color:#6a0000; }
       .fcrm-inline { display:inline-flex; align-items:center; gap:7px; margin-left:8px; vertical-align:middle; }
       .fcrm-qty { width:3.35ch; min-width:30px; height:17px; padding:0 2px; text-align:center; border:1px solid transparent; border-radius:4px; background:transparent; color:transparent; caret-color:transparent; font:12px Arial,sans-serif; opacity:.20; appearance:textfield; }
       .fcrm-qty:hover { opacity:.28; }
@@ -801,6 +842,7 @@
     if (refreshBusy) { refreshPending = true; return; }
     refreshBusy = true;
     try {
+      paintPurchaseOrders();
       const panel = readProductPanel();
       if (panel) {
         const changed = panel.signature !== lastProductSignature;
