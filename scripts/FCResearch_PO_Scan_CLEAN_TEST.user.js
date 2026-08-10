@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         v0.1.0 FCResearch PO + Scan Flow CLEAN TEST
+// @name         v0.1.1 FCResearch Scan Flow CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.1.0
-// @description  CLEAN TEST merging PO Cell Highlighter and FCResearch Scan Flow with one shared page observer.
+// @version      0.1.1
+// @description  CLEAN TEST standalone FCResearch item-to-container scan flow.
 // @include      /^https?:\/\/.*fcresearch.*\//
 // @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
 // @run-at       document-idle
@@ -14,24 +14,19 @@
 
 (() => {
   'use strict';
-  if (window.__fcrPoScanCleanTest_v010) return;
-  window.__fcrPoScanCleanTest_v010 = true;
+  if (window.__fcrScanFlowCleanTest_v011) return;
+  window.__fcrScanFlowCleanTest_v011 = true;
 
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const STATE_KEY = 'fcrScanFlowModeV1';
   const MIN_KEY = 'fcrScanFlowMinimizedV1';
   const ITEM = 'ITEM';
   const CONTAINER = 'CONTAINER';
 
   const norm = value => String(value || '').normalize('NFKD').replace(/\s+/g, ' ').trim();
-  const lower = value => norm(value).toLowerCase().replace(/\(.*?\)/g, '').trim();
   const debounce = (fn, ms) => { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); }; };
 
   const css = `
-    td.poch__unfilled{background:rgba(255,193,7,.28)!important;box-shadow:inset 0 0 0 2px rgba(255,180,0,.50);font-weight:600}
-    td.poch__cancelled{background:rgba(220,53,69,.24)!important;box-shadow:inset 0 0 0 2px rgba(220,53,69,.45);font-weight:600}
-    td.poch__band{background:rgba(255,0,0,.14)!important;box-shadow:inset 0 0 0 1px rgba(255,0,0,.22);color:#5a0000}
-    td.poch__dateold{background:rgba(255,0,0,.22)!important;box-shadow:inset 0 0 0 1px rgba(255,0,0,.38)!important;font-weight:700;color:#6a0000}
     #fcrScanFlowOverlay{position:fixed;top:8px;left:210px;width:408px;height:38px;box-sizing:border-box;z-index:1000000;padding:3px;background:#111827;border:1px solid #0f172a;border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.28);font-family:Arial,Helvetica,sans-serif;color:#111827}
     #fcrScanFlowMain{display:flex;align-items:center;gap:4px;width:100%;height:100%}
     #fcrScanFlowOverlay.minimized{width:62px;height:34px;padding:2px}
@@ -57,51 +52,18 @@
   style.textContent = css;
   document.head.appendChild(style);
 
-  function intFrom(cell) {
-    const raw = cell?.querySelector?.("input,[contenteditable='true']")?.value ?? cell?.textContent ?? '';
-    const match = String(raw).replace(/[, ]+/g, '').match(/-?\d+/);
-    return match ? parseInt(match[0], 10) : 0;
-  }
-
-  function dateFromCell(cell) {
-    const match = norm(cell?.textContent).match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/);
-    if (!match) return null;
-    return new Date(+match[1], +match[2] - 1, +match[3], +(match[4] || 0), +(match[5] || 0), +(match[6] || 0));
-  }
-
-  function paintPurchaseOrders() {
-    const body = document.querySelector('table#table-purchase-order-item');
-    if (!body) return;
-    const wrap = body.closest('.dataTables_scroll');
-    const head = wrap?.querySelector('.dataTables_scrollHead table') || body;
-    const headers = [...head.querySelectorAll('thead th,thead td')].map(cell => lower(cell.textContent));
-    const idxU = headers.findIndex(value => value.includes('unfilled'));
-    const idxC = headers.findIndex(value => /canceled|cancelled/.test(value));
-    const idxD = headers.findIndex(value => value.includes('order date') || value === 'date');
-    const six = new Date(); six.setMonth(six.getMonth() - 6);
-    const seven = new Date(); seven.setMonth(seven.getMonth() - 7);
-    for (const row of [...(body.tBodies[0] || body).rows]) {
-      const cells = [...row.cells];
-      cells.forEach(cell => cell.classList.remove('poch__unfilled','poch__cancelled','poch__band','poch__dateold'));
-      const dateCell = idxD >= 0 ? cells[idxD] : null;
-      const date = dateFromCell(dateCell);
-      if (date && date < six) for (let offset = 0; offset <= 2; offset++) cells[idxD - offset]?.classList.add('poch__band');
-      if (dateCell && date && date < seven) dateCell.classList.add('poch__dateold');
-      if (idxU >= 0 && intFrom(cells[idxU]) > 0) cells[idxU]?.classList.add('poch__unfilled');
-      if (idxC >= 0 && intFrom(cells[idxC]) > 0) cells[idxC]?.classList.add('poch__cancelled');
-    }
-  }
-
   let overlay, input, modeLabel, statusLabel, openButton, mode = sessionStorage.getItem(STATE_KEY) === CONTAINER ? CONTAINER : ITEM;
   let busy = false, statusTimer;
 
   function findInventoryTable() {
     return document.querySelector('#table-inventory') || document.querySelector('[data-section-type="inventory"] table');
   }
+
   function inventorySection() {
     const table = findInventoryTable();
     return table?.closest('[data-section-type="inventory"],.a-box,section') || table?.parentElement || document.getElementById('inventory-nav')?.parentElement;
   }
+
   function findInventorySearch() {
     for (const selector of ['#table-inventory_filter input','#table-inventory_wrapper input[type="search"]','input[aria-controls="table-inventory"]']) {
       const found = document.querySelector(selector);
@@ -109,6 +71,7 @@
     }
     return [...(inventorySection()?.querySelectorAll('input') || [])].find(el => el.id !== 'search' && !el.disabled && ['text','search'].includes((el.type || 'text').toLowerCase())) || null;
   }
+
   function waitForInventorySearch(timeout = 30000) {
     return new Promise(resolve => {
       const immediate = findInventorySearch();
@@ -123,6 +86,7 @@
       setTimeout(() => { observer.disconnect(); resolve(findInventorySearch()); }, timeout);
     });
   }
+
   function setNativeValue(el, value) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
     setter ? setter.call(el, value) : (el.value = value);
@@ -132,10 +96,12 @@
       if (jq && table && jq.fn?.dataTable?.isDataTable(table)) jq(table).DataTable().search(value).draw();
     } catch {}
   }
+
   function matchingRows(container) {
     const wanted = norm(container).toUpperCase();
     return [...(findInventoryTable()?.querySelectorAll('tbody tr') || [])].filter(row => row.getClientRects().length && norm(row.cells?.[0]?.textContent).toUpperCase() === wanted);
   }
+
   function waitForRows(container, timeout = 1600) {
     return new Promise(resolve => {
       const start = Date.now();
@@ -147,12 +113,14 @@
       tick();
     });
   }
+
   function setStatus(text, type = 'working') {
     clearTimeout(statusTimer);
     statusLabel.textContent = text || '';
     statusLabel.className = text && type !== 'ready' ? type : 'hidden';
     if (type === 'success' || type === 'error') statusTimer = setTimeout(() => statusLabel.classList.add('hidden'), type === 'error' ? 3000 : 1800);
   }
+
   function positionOverlay() {
     const search = document.querySelector('#search');
     if (!search || !overlay) return;
@@ -160,9 +128,19 @@
     const width = overlay.classList.contains('minimized') ? 62 : (overlay.offsetWidth || 408);
     let left = rect.left - width - 8, top = rect.top + Math.round((rect.height - (overlay.offsetHeight || 38)) / 2);
     if (left < 8) { left = 8; top = Math.max(8, rect.bottom + 6); }
-    overlay.style.left = `${Math.round(left)}px`; overlay.style.top = `${Math.max(4, Math.round(top))}px`;
+    overlay.style.left = `${Math.round(left)}px`;
+    overlay.style.top = `${Math.max(4, Math.round(top))}px`;
   }
-  function focusSoon() { setTimeout(() => { if (!overlay.classList.contains('minimized')) { input.focus(); input.select(); } }, 60); }
+
+  function focusSoon() {
+    setTimeout(() => {
+      if (!overlay.classList.contains('minimized')) {
+        input.focus();
+        input.select();
+      }
+    }, 60);
+  }
+
   function setMode(next, save = true) {
     mode = next;
     if (save) sessionStorage.setItem(STATE_KEY, mode);
@@ -173,68 +151,130 @@
     input.placeholder = mode === ITEM ? 'Scan ASIN / FNSKU' : 'Scan container';
     positionOverlay();
   }
+
   function setMinimized(value, save = true) {
     overlay.classList.toggle('minimized', value);
     if (save) GM_setValue(MIN_KEY, value);
     if (value && document.activeElement === input) input.blur();
     positionOverlay();
   }
+
   function flash(rows) {
     const flash = document.getElementById('fcrScanFlowPageFlash');
-    flash.classList.remove('active'); void flash.offsetWidth; flash.classList.add('active');
+    flash.classList.remove('active');
+    void flash.offsetWidth;
+    flash.classList.add('active');
     rows.forEach(row => row.classList.add('fcr-scan-flow-hit'));
-    setTimeout(() => { flash.classList.remove('active'); rows.forEach(row => row.classList.remove('fcr-scan-flow-hit')); }, 1300);
+    setTimeout(() => {
+      flash.classList.remove('active');
+      rows.forEach(row => row.classList.remove('fcr-scan-flow-hit'));
+    }, 1300);
   }
+
   async function handleScan(value) {
     if (busy || !value) return;
     if (mode === ITEM) {
       busy = true;
       sessionStorage.setItem(STATE_KEY, CONTAINER);
-      const url = new URL(location.href); url.searchParams.set('s', value); url.hash = '';
+      const url = new URL(location.href);
+      url.searchParams.set('s', value);
+      url.hash = '';
       location.assign(url.toString());
       return;
     }
-    busy = true; input.value = ''; setStatus('Filtering Inventory...', 'working');
+
+    busy = true;
+    input.value = '';
+    setStatus('Filtering Inventory...', 'working');
     const search = findInventorySearch() || await waitForInventorySearch(6000);
-    if (!search) { busy = false; setStatus('Inventory search not found. Container not applied.', 'error'); focusSoon(); return; }
+    if (!search) {
+      busy = false;
+      setStatus('Inventory search not found. Container not applied.', 'error');
+      focusSoon();
+      return;
+    }
+
     setNativeValue(search, value);
     const rows = await waitForRows(value);
-    busy = false; setMode(ITEM, true);
+    busy = false;
+    setMode(ITEM, true);
     if (!rows.length) setStatus('No matching container. Scan next item', 'error');
-    else { flash(rows); setStatus('✓ Container found. Scan next item', 'success'); }
+    else {
+      flash(rows);
+      setStatus('✓ Container found. Scan next item', 'success');
+    }
     focusSoon();
   }
+
   async function prepareContainer() {
-    busy = true; setMode(CONTAINER, false); setStatus('Loading Inventory...', 'working');
+    busy = true;
+    setMode(CONTAINER, false);
+    setStatus('Loading Inventory...', 'working');
     const ready = await waitForInventorySearch();
     busy = false;
     if (!ready) setStatus('Inventory search not found. Reset to item and retry.', 'error');
     else setStatus('Scan container', 'ready');
     focusSoon();
   }
+
   function buildScanFlow() {
     if (!/\/results\/?$/i.test(location.pathname) || document.getElementById('fcrScanFlowOverlay')) return;
-    overlay = document.createElement('div'); overlay.id = 'fcrScanFlowOverlay'; overlay.title = `FCResearch Scan Flow v${VERSION}`;
+
+    overlay = document.createElement('div');
+    overlay.id = 'fcrScanFlowOverlay';
+    overlay.title = `FCResearch Scan Flow v${VERSION}`;
     overlay.innerHTML = `<div id="fcrScanFlowMain"><div id="fcrScanFlowMode"></div><input id="fcrScanFlowInput" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="fcrScanFlowReset">Reset</button><button id="fcrScanFlowMin">−</button></div><button id="fcrScanFlowOpen"></button><div id="fcrScanFlowStatus" class="hidden"></div>`;
     document.body.appendChild(overlay);
-    const pageFlash = document.createElement('div'); pageFlash.id = 'fcrScanFlowPageFlash'; document.body.appendChild(pageFlash);
-    input = document.getElementById('fcrScanFlowInput'); modeLabel = document.getElementById('fcrScanFlowMode'); statusLabel = document.getElementById('fcrScanFlowStatus'); openButton = document.getElementById('fcrScanFlowOpen');
-    input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); const value = norm(input.value).replace(/\r?\n/g, ''); if (value) handleScan(value); } }, true);
-    document.getElementById('fcrScanFlowReset').onclick = () => { busy = false; input.value = ''; setMode(ITEM, true); setStatus('Reset to item', 'success'); focusSoon(); };
+
+    const pageFlash = document.createElement('div');
+    pageFlash.id = 'fcrScanFlowPageFlash';
+    document.body.appendChild(pageFlash);
+
+    input = document.getElementById('fcrScanFlowInput');
+    modeLabel = document.getElementById('fcrScanFlowMode');
+    statusLabel = document.getElementById('fcrScanFlowStatus');
+    openButton = document.getElementById('fcrScanFlowOpen');
+
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      const value = norm(input.value).replace(/\r?\n/g, '');
+      if (value) handleScan(value);
+    }, true);
+
+    document.getElementById('fcrScanFlowReset').onclick = () => {
+      busy = false;
+      input.value = '';
+      setMode(ITEM, true);
+      setStatus('Reset to item', 'success');
+      focusSoon();
+    };
     document.getElementById('fcrScanFlowMin').onclick = () => setMinimized(true);
     openButton.onclick = () => { setMinimized(false); focusSoon(); };
     modeLabel.onclick = focusSoon;
+
     setMinimized(GM_getValue(MIN_KEY, false) === true, false);
     setMode(mode, false);
     window.addEventListener('resize', positionOverlay, true);
-    setTimeout(positionOverlay, 0); setTimeout(positionOverlay, 250); setTimeout(positionOverlay, 1000);
-    if (mode === CONTAINER) prepareContainer(); else { setStatus('Scan item', 'ready'); focusSoon(); }
+    setTimeout(positionOverlay, 0);
+    setTimeout(positionOverlay, 250);
+    setTimeout(positionOverlay, 1000);
+    if (mode === CONTAINER) prepareContainer();
+    else {
+      setStatus('Scan item', 'ready');
+      focusSoon();
+    }
   }
 
-  const refresh = debounce(() => { paintPurchaseOrders(); buildScanFlow(); positionOverlay(); }, 80);
+  const refresh = debounce(() => {
+    buildScanFlow();
+    positionOverlay();
+  }, 80);
+
   const observer = new MutationObserver(refresh);
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('pagehide', () => observer.disconnect(), { once: true });
   refresh();
-  console.log(`FCResearch PO + Scan Flow CLEAN TEST v${VERSION} loaded`);
+  console.log(`FCResearch Scan Flow CLEAN TEST v${VERSION} loaded`);
 })();
