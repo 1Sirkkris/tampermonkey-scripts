@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v0.3.4 AFT Tools Master CLEAN TEST
+// @name         v0.3.5 AFT Tools Master CLEAN TEST
 // @namespace    https://github.com/1Sirkkris
-// @version      0.3.4
+// @version      0.3.5
 // @description  Single clean AFT master: Each Multi Flip, Sku EditItems Loop, Datelot Expiration, FcSku Flip and MoveItems.
 // @match        http://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
 // @match        https://aft-qt-jp.aka.nrt.corp.amazon.com/app/edititems*
@@ -29,10 +29,10 @@
 
 (() => {
   'use strict';
-  if (window.__AFT_MASTER_V034__) return;
-  window.__AFT_MASTER_V034__ = true;
+  if (window.__AFT_MASTER_V035__) return;
+  window.__AFT_MASTER_V035__ = true;
 
-  const VERSION='0.3.4',$=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+  const VERSION='0.3.5',$=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
   const norm=v=>String(v??'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim(),low=v=>norm(v).toLowerCase(),sleep=ms=>new Promise(r=>setTimeout(r,ms));
   function visible(el){if(!el||!el.isConnected||el.disabled||el.getAttribute('aria-disabled')==='true')return false;const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'}
   const pageText=()=>norm(document.body?.innerText||''),heading=()=>norm($$('h1,h2,h3,[role="heading"]').map(x=>x.textContent).find(Boolean)||'');
@@ -47,7 +47,7 @@
 
   function injectCss(){if($('#aftm-style'))return;const s=document.createElement('style');s.id='aftm-style';s.textContent=`
     .aftm{position:fixed;z-index:2147483647;font:13px/1.35 Arial,sans-serif;box-shadow:0 8px 24px #0004}.aftm *{box-sizing:border-box}.aftm button{cursor:pointer;font-weight:700}.aftm input,.aftm textarea,.aftm select{width:100%;padding:7px;border:1px solid #91a0aa;border-radius:5px;background:#fff;color:#1d252b}.aftm select:disabled{opacity:.45;cursor:not-allowed;background:#e9ecef}
-    #aftm-each{top:24px;left:15px;width:318px;background:#eef7fb;border:1px solid #527985;border-radius:8px;overflow:hidden;color:#172126}#aftm-each .timer{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#e8f6ff;padding:7px 10px;font-weight:700;white-space:nowrap}#aftm-each .section-head{display:flex;align-items:center;justify-content:space-between;background:#174f59;color:#fff;padding:8px 10px;font-weight:800;cursor:pointer}#aftm-each .section-head button{width:25px;height:22px;padding:0;border:1px solid #9bb6bd;border-radius:5px;background:#123f47;color:#fff}#aftm-each .body{padding:10px;display:grid;gap:8px}#aftm-each[data-min="1"] .body{display:none}#aftm-each .primary{background:#225d67;color:#fff;border:0;padding:8px;border-radius:5px}#aftm-each .danger{background:#d94a4a;color:#fff;border:1px solid #b93737;padding:6px 10px;border-radius:6px}
+    #aftm-each{top:125px;left:15px;width:318px;background:#eef7fb;border:1px solid #527985;border-radius:8px;overflow:hidden;color:#172126}#aftm-each .timer{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#e8f6ff;padding:7px 10px;font-weight:700;white-space:nowrap}#aftm-each .section-head{display:flex;align-items:center;justify-content:space-between;background:#174f59;color:#fff;padding:8px 10px;font-weight:800;cursor:pointer}#aftm-each .section-head button{width:25px;height:22px;padding:0;border:1px solid #9bb6bd;border-radius:5px;background:#123f47;color:#fff}#aftm-each .body{padding:10px;display:grid;gap:8px}#aftm-each[data-min="1"] .body{display:none}#aftm-each .primary{background:#225d67;color:#fff;border:0;padding:8px;border-radius:5px}#aftm-each .danger{background:#d94a4a;color:#fff;border:1px solid #b93737;padding:6px 10px;border-radius:6px}
     #aftm-sku,#aftm-datelot{right:12px;bottom:12px;width:304px;background:#f4f6f7;color:#1f2a30;border:1px solid #9aa8af;border-radius:10px;overflow:hidden}#aftm-sku .head,#aftm-datelot .head{display:flex;align-items:center;justify-content:space-between;background:#36545c;color:#fff;padding:9px 11px;font-weight:800}#aftm-sku .head button,#aftm-datelot .head button{width:28px;height:23px;padding:0;border:1px solid #9eb0b5;border-radius:5px;background:#294249;color:#fff}#aftm-sku .body,#aftm-datelot .body{padding:10px;display:grid;gap:8px}#aftm-sku[data-min="1"] .body,#aftm-datelot[data-min="1"] .body{display:none}#aftm-sku label,#aftm-datelot label{display:grid;gap:3px;font-weight:700}#aftm-sku .two{display:grid;grid-template-columns:1fr 1fr;gap:8px}.aftm-row{display:flex;gap:7px}.aftm-row>*{flex:1}.aftm-run{background:#2f6f63!important;color:#fff!important;border:1px solid #25594f!important}.aftm-stop,.aftm-clear{background:#e8ecee;color:#182126;border:1px solid #a8b4ba}.aftm-status{font-weight:400;min-height:17px}`;document.documentElement.appendChild(s)}
 
   const Edit={active:false,mode:null,panel:null,running:false,token:0,keys:{q:'aftm_edit_q',active:'aftm_edit_active',done:'aftm_edit_done',total:'aftm_edit_total',sku:'aftm_sku_entry',currentState:'aftm_sku_current_state',currentDamage:'aftm_sku_current_damage',desiredState:'aftm_sku_desired_state',desiredDamage:'aftm_sku_desired_damage',skuMin:'aftm_sku_min',eachMin:'aftm_each_min',dateMin:'aftm_date_min'},match:()=>/\/app\/edititems/i.test(location.pathname),
