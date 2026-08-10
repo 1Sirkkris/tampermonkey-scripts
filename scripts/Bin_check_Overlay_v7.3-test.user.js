@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         v7.3.2-test Bin check Overlay
+// @name         v7.3.3-test Bin check Overlay
 // @namespace    https://gist.github.com/1Sirkkris
-// @version      7.3.2-test
+// @version      7.3.3-test
 // @description  Clean test build with floor filters, optional quantity sorting, and lazy P2/P3/P4 bin copy.
 // @author       mojordaq / ChatGPT edit
 // @include      /^https?:\/\/.*fcresearch.*\//
@@ -90,7 +90,7 @@
 
   function loadAllRows(table) {
     if (state.paused) {
-      updateStatus("Paused");
+      updateStatus();
       setTimeout(() => loadAllRows(table), 300);
       return;
     }
@@ -212,7 +212,7 @@
 
   function pumpQueue() {
     if (state.paused) {
-      updateStatus("Paused");
+      updateStatus();
       return;
     }
 
@@ -283,7 +283,7 @@
     applyPodResult(pod, result);
     state.processedPods++;
     scheduleRefresh();
-    updateStatus(state.processedPods >= state.totalPods ? "Done" : "");
+    updateStatus();
     pumpQueue();
   }
 
@@ -300,7 +300,6 @@
     const existing = document.getElementById("pLevelOverlay");
     if (existing) {
       existing.hidden = false;
-      existing.classList.remove("minimized");
       return;
     }
 
@@ -309,13 +308,12 @@
     overlay.id = "pLevelOverlay";
     overlay.innerHTML = `
       <div id="pLevelOverlayHeader">
-        <div>
-          <span id="pLevelOverlayTitle">P-level Overlay Sorter v7.3.2-test</span>
-          <span id="pLevelOverlayStatus">Starting...</span>
+        <div id="pLevelOverlaySummary">
+          <span id="pLevelOverlayTitle">Overlay v7.3.3</span>
+          <span id="pLevelOverlayStatus">- Loaded 0 - Remaining 0 - Total 0</span>
         </div>
         <div id="pLevelOverlayActions">
           <button type="button" id="pLevelPauseBtn">Pause</button>
-          <button type="button" id="pLevelMinBtn">Min</button>
           <button type="button" id="pLevelCloseBtn">Hide</button>
         </div>
       </div>
@@ -353,15 +351,10 @@
       }
     });
 
-    document.getElementById("pLevelMinBtn").addEventListener("click", event => {
-      overlay.classList.toggle("minimized");
-      event.currentTarget.textContent = overlay.classList.contains("minimized") ? "Open" : "Min";
-    });
-
     document.getElementById("pLevelPauseBtn").addEventListener("click", () => {
       state.paused = !state.paused;
       updatePauseButton();
-      updateStatus(state.paused ? "Paused" : "Resuming");
+      updateStatus();
       if (!state.paused) pumpQueue();
     });
 
@@ -482,19 +475,14 @@
     button.classList.toggle("paused", state.paused);
   }
 
-  function updateStatus(message = "") {
+  function updateStatus() {
     const status = document.getElementById("pLevelOverlayStatus");
     if (!status) return;
 
-    const prefix = message || (state.paused ? "Paused" : "");
-    const progress = state.totalPods
-      ? `${state.processedPods}/${state.totalPods} containers | ${state.rows.length}/${state.totalRows} rows`
-      : `${state.rows.length} rows`;
-    const queue = state.totalPods && state.processedPods < state.totalPods
-      ? ` | active ${state.activeRequests} | queued ${state.queue.length}`
-      : "";
-
-    status.textContent = `- ${prefix ? `${prefix} | ` : ""}${progress}${queue} | showing ${visibleRows().length}`;
+    const loaded = state.processedPods;
+    const total = state.totalPods;
+    const remaining = Math.max(total - loaded, 0);
+    status.textContent = `- Loaded ${loaded} - Remaining ${remaining} - Total ${total}`;
   }
 
   function copyLazyBinCheck() {
@@ -588,10 +576,10 @@
     style.textContent = `
       #pLevelOverlay{position:fixed;right:14px;bottom:14px;width:660px;max-width:calc(100vw - 28px);max-height:78vh;z-index:999999;background:#fff;border:2px solid #111827;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-family:Arial,Helvetica,sans-serif;color:#111827;overflow:hidden}
       #pLevelOverlay[hidden]{display:none}
-      #pLevelOverlay.minimized{width:300px;max-height:58px}
       #pLevelOverlayHeader{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#111827;color:#fff;padding:8px 10px;font-weight:800}
+      #pLevelOverlaySummary{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap}
       #pLevelOverlayTitle{font-size:14px;line-height:1.15}
-      #pLevelOverlayStatus{font-size:12px;font-weight:700;opacity:.95;margin-left:6px}
+      #pLevelOverlayStatus{font-size:12px;font-weight:700;opacity:.95}
       #pLevelOverlayActions{display:flex;align-items:center;gap:6px;flex-shrink:0}
       #pLevelOverlayControls{display:flex;flex-wrap:nowrap;align-items:center;gap:4px;white-space:nowrap;overflow-x:auto;scrollbar-width:thin}
       #pLevelOverlay button{cursor:pointer;border:1px solid #374151;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:800;background:#f3f4f6;color:#111827}
@@ -599,7 +587,6 @@
       #pLevelOverlay button:hover{background:#e5e7eb}
       #pLevelOverlay button.active{outline:3px solid #111827;outline-offset:1px}
       #pLevelOverlayBody{padding:9px;overflow:auto;max-height:calc(78vh - 46px)}
-      #pLevelOverlay.minimized #pLevelOverlayBody{display:none}
       #pLevelOverlayControls{margin-bottom:8px;padding-bottom:2px}
       #pLevelOverlayControls .p-level-divider{width:1px;height:22px;background:#cbd5e1;margin:0 2px;flex:0 0 1px}
       #pLevelOverlayControls .p1btn{background:#F0E442;color:#111}
