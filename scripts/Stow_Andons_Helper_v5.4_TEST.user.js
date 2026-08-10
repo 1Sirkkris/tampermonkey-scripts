@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         v5.4.3 TEST Stow Andons Helper — Safe Trim
+// @name         v5.4.4 TEST Stow Andons Helper — Safe Trim
 // @namespace    Violentmonkey Scripts
 // @include      /^https?:\/\/.*fcresearch.*\//
 // @include      /^https?:\/\/qifcr\.fe\.aftx\.amazonoperations\.app\//
@@ -8,236 +8,64 @@
 // @connect      aft-moveapp-nrt-nrt.nrt.proxy.amazon.com
 // @connect      fcresearch-fe.aka.amazon.com
 // @connect      localhost
-// @version      5.4.3-test
-// @description  Safe v5.3 core trim with a P1 OBIOL move button.
+// @version      5.4.4-test
+// @description  Standalone lean build: dropzone moves, P1 OBIOL, printing, hover preview, suspicious dimensions and FUD urgency only.
 // @run-at       document-idle
-// @require      https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/23e5c344194478e84c2bb8bfa6b5ecfed215946d/scripts/Stow_Andons_Helper.user.js
 // @updateURL    https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Stow_Andons_Helper_v5.4_TEST.user.js
 // @downloadURL  https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Stow_Andons_Helper_v5.4_TEST.user.js
 // ==/UserScript==
 
-(function () {
-  'use strict';
-
-  // The original v5.3 code remains the source of truth for:
-  // floor selection, existing destination mapping, printing,
-  // hover preview, suspicious dimensions, FUD colours and search refocus.
-
-  const MOVE_ENDPOINT = 'https://aft-moveapp-nrt-nrt.nrt.proxy.amazon.com/api/move-container';
-  const OBIOL_DESTINATION = 'dz-P-OBIOL';
-
-  const UNUSED_STORAGE_KEYS = [
-    'vm_fc_drop_moves_v1',
-    'vm_fc_sos_report_v1',
-    'vm_fc_root_causes_v1',
-    'vm_fc_tote_adj_v1'
-  ];
-
-  function getContainerId() {
-    try {
-      return new URL(location.href).searchParams.get('s') || null;
-    } catch {
-      return null;
-    }
-  }
-
-  function refocusTopSearchInput(delay) {
-    setTimeout(() => {
-      const inputs = [...document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])')];
-      const input = inputs.find(el => {
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && !el.disabled;
-      });
-      input?.focus();
-    }, delay);
-  }
-
-  function flashButton(button, message, failed = false) {
-    const original = 'OBIOL';
-    button.textContent = message;
-    button.disabled = false;
-    button.dataset.busy = 'false';
-    button.style.setProperty('outline', failed ? '2px solid #dc2626' : '2px solid #16a34a', 'important');
-
-    setTimeout(() => {
-      if (!button.isConnected) return;
-      button.textContent = original;
-      button.style.removeProperty('outline');
-    }, 1800);
-  }
-
-  function toHex(value) {
-    return Array.from(new TextEncoder().encode(String(value)))
-      .map(byte => byte.toString(16).padStart(2, '0'))
-      .join('');
-  }
-
-  function printObiolIfEnabled() {
-    const printToggle = document.getElementById('vm-set-print');
-    if (!printToggle?.checked) return Promise.resolve();
-
-    const parsedQty = parseInt(document.getElementById('vm-set-qty')?.value || '2', 10);
-    const quantity = Number.isFinite(parsedQty) && parsedQty > 0 ? parsedQty : 1;
-    const hex = toHex(OBIOL_DESTINATION);
-    const url = new URL('http://localhost:5965/printer');
-
-    url.searchParams.set('action', 'print');
-    url.searchParams.set('type', 'barcode');
-    url.searchParams.set('data', hex);
-    url.searchParams.set('text', hex);
-    url.searchParams.set('quantity', String(quantity));
-    url.searchParams.set('desc', '');
-    url.searchParams.set('seq', String(Math.floor(Math.random() * 9e9) + 1e9));
-
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: url.toString(),
-        timeout: 15000,
-        onload: response => response.status < 300
-          ? resolve()
-          : reject(new Error(`HTTP ${response.status}`)),
-        onerror: () => reject(new Error('Network')),
-        ontimeout: () => reject(new Error('Timeout'))
-      });
-    });
-  }
-
-  function moveToObiol(button) {
-    if (button.dataset.busy === 'true') return;
-
-    const containerId = getContainerId();
-    if (!containerId) {
-      flashButton(button, 'No tote', true);
-      return;
-    }
-
-    button.dataset.busy = 'true';
-    button.disabled = true;
-    button.textContent = 'Moving…';
-
-    GM_xmlhttpRequest({
-      method: 'POST',
-      url: MOVE_ENDPOINT,
-      headers: { 'Content-Type': 'application/json' },
-      data: JSON.stringify({
-        sourceScannableId: null,
-        destinationScannableId: OBIOL_DESTINATION,
-        containerScannableId: containerId,
-        confirmed: 'true'
-      }),
-      onload: response => {
-        if (response.status < 300) {
-          flashButton(button, 'Moved ✓');
-          printObiolIfEnabled().catch(() => flashButton(button, 'Print failed', true));
-        } else {
-          flashButton(button, `Failed ${response.status}`, true);
-        }
-        refocusTopSearchInput(80);
-        refocusTopSearchInput(400);
-      },
-      onerror: () => {
-        flashButton(button, 'Move failed', true);
-        refocusTopSearchInput(80);
-        refocusTopSearchInput(400);
-      },
-      ontimeout: () => {
-        flashButton(button, 'Timed out', true);
-        refocusTopSearchInput(80);
-        refocusTopSearchInput(400);
-      }
-    });
-  }
-
-  function ensureObiolButton() {
-    const buttonWrap = document.getElementById('vm-drop-buttons-wrap');
-    const p1Active = !!document.querySelector('.vm-floor-btn.active[data-floor="P1"]');
-    const existing = document.getElementById('vm-p1-obiol');
-
-    if (!buttonWrap || !p1Active) {
-      existing?.remove();
-      return;
-    }
-
-    if (existing) return;
-
-    const button = document.createElement('button');
-    button.id = 'vm-p1-obiol';
-    button.className = 'vm-tag-btn';
-    button.type = 'button';
-    button.dataset.drop = 'P1-OBIOL';
-    button.dataset.busy = 'false';
-    button.title = OBIOL_DESTINATION;
-    button.textContent = 'OBIOL';
-
-    button.addEventListener('click', event => {
-      event.preventDefault();
-      event.stopPropagation();
-      moveToObiol(button);
-    });
-
-    const primeButton = buttonWrap.querySelector('.vm-tag-btn[data-drop="Prime"]');
-    buttonWrap.insertBefore(button, primeButton || null);
-  }
-
-  function applySafeTrim() {
-    // Keep the settings gear. Hide only the unwanted feature launch buttons.
-    document.querySelectorAll('#vm-fab-dz, #vm-fab-sos, #vm-fab-rc').forEach(button => {
-      button.style.setProperty('display', 'none', 'important');
-    });
-
-    // Leave the hidden panel DOM in place because v5.3's proven move callback
-    // still updates it internally. This avoids touching the working move flow.
-    document.querySelectorAll('#vm-dz-pop, #vm-sos-pop, #vm-rc-pop').forEach(panel => {
-      panel.classList.add('hidden');
-      panel.style.setProperty('display', 'none', 'important');
-    });
-
-    // Root-cause-only dialogs are not needed in this test.
-    document.querySelectorAll('#vm-dmg-overlay, #vm-haz-overlay, #vm-gen-overlay, #vm-edit-overlay').forEach(modal => {
-      modal.classList.add('hidden');
-      modal.style.setProperty('display', 'none', 'important');
-    });
-
-    ensureObiolButton();
-
-    // Do not retain tracker/report data while this trimmed test is active.
-    for (const key of UNUSED_STORAGE_KEYS) {
-      try { localStorage.removeItem(key); } catch {}
-    }
-  }
-
-  const style = document.createElement('style');
-  style.id = 'vm-safe-trim-css';
-  style.textContent = `
-    #vm-fab-dz,
-    #vm-fab-sos,
-    #vm-fab-rc,
-    #vm-dz-pop,
-    #vm-sos-pop,
-    #vm-rc-pop,
-    #vm-dmg-overlay,
-    #vm-haz-overlay,
-    #vm-gen-overlay,
-    #vm-edit-overlay {
-      display: none !important;
-    }
-  `;
-  document.head.appendChild(style);
-
-  applySafeTrim();
-
-  new MutationObserver(applySafeTrim).observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
-
-  // v5.3 can write tracker values after a successful move. Clear only those
-  // unused keys; all floor, print and hover settings remain untouched.
-  setInterval(() => {
-    ensureObiolButton();
-    for (const key of UNUSED_STORAGE_KEYS) {
-      try { localStorage.removeItem(key); } catch {}
-    }
-  }, 1000);
+(()=>{'use strict';
+if(window.__stowAndonsSafe544)return;window.__stowAndonsSafe544=1;
+const MOVE='https://aft-moveapp-nrt-nrt.nrt.proxy.amazon.com/api/move-container',PROD='https://fcresearch-fe.aka.amazon.com/BWU2/results/product',FUD='https://aft-fud-reports.iad.amazon.com/fudService/reports/BWU2.json';
+const CK={f:'vm_fc_floor',p:'vm_fc_print_dropzone',q:'vm_fc_print_dz_qty',i:'vm_fc_show_img_hover',iw:'vm_fc_img_width',t:'vm_fc_show_title_hover',d:'vm_fc_show_dims_hover',w:'vm_fc_show_weight_hover',s:'vm_fc_show_sortable_hover'};
+const floors=['P1','P2','P3','P4'],upper=[['Cubiscan','dz-Pcubiscan-{f}'],['Damages','dz-P-Damages-{f}'],['Hazmat','dz-P-Hazmat-{f}'],['ISS','dz-P-ISS-{f}'],['Non-Sort','dz-Pnonsort-{f}'],['Prep','dz-P-Prep-{f}']],p1=[['Hazmat','dz-P-HAZMAT_OUT'],['Ticketland','dz-P-Ticketland'],['Consolidation','dz-P-issconsol'],['ISS WIP','dz-S-ISSWIP1'],['Nonsort','dz-P-IB-nonsort'],['Shipdock','dz-P-ISS-Shipdock'],['Damageland','dz-Pdamageland'],['Receive Damages','dz-P-rcv-Damages'],['OBIOL','dz-P-OBIOL']];
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)],clean=v=>String(v??'').replace(/\s+/g,' ').trim();
+let fud=new Map(),pc=new Map(),hover='',hx=0,hy=0,rt=0,st=0,seq=0,lastSig='',toastT=0;
+function setC(k,v){document.cookie=`${k}=${encodeURIComponent(v)}; expires=${new Date(Date.now()+31536e6).toUTCString()}; path=/`}
+function getC(k){for(let x of document.cookie.split(';')){x=x.trim();if(x.startsWith(k+'='))return decodeURIComponent(x.slice(k.length+1))}return null}
+function bool(k,d=true){let v=getC(k);return v===null?d:v==='1'}
+function floor(){return $('.vm-floor-btn.active')?.dataset.floor||getC(CK.f)||'P2'}
+function page(){try{let u=new URL(location.href);return /\/BWU2\/results\/?$/i.test(u.pathname)&&/^(ts|cs)X/i.test(u.searchParams.get('s')||'')}catch{return false}}
+function cid(){try{return new URL(location.href).searchParams.get('s')||''}catch{return''}}
+function focus(d=80){setTimeout(()=>{let e=$$('input[type="search"],input[type="text"],input:not([type])').find(x=>{let r=x.getBoundingClientRect();return r.width>=250&&r.height&&r.top>=0&&r.top<90&&!x.disabled});if(e){e.focus({preventScroll:true});try{e.select()}catch{}}},d)}
+function dest(name){if(name==='Prime')return'dz-P-PRIME';let f=floor(),a=f==='P1'?p1:upper,hit=a.find(x=>x[0]===name);return hit?(f==='P1'?hit[1]:hit[1].replace('{f}',f)):''}
+function css(){if($('#vm-safe-css'))return;let s=document.createElement('style');s.id='vm-safe-css';s.dataset.vmUi='1';s.textContent=`
+#vm-toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:1000010;opacity:0;padding:8px 14px;border-radius:6px;color:#fff;font:13px Arial;box-shadow:0 4px 16px #0003}#vm-toast.s{background:#2b8a3e}#vm-toast.e{background:#c92a2a}
+#vm-gear{position:fixed;left:16px;bottom:16px;z-index:999998;width:34px;height:34px;border:1px solid #ccd2d8;border-radius:50%;background:#fff;cursor:pointer;font-size:17px}#vm-gear.on{background:#1971c2;color:#fff}#vm-set{position:fixed;left:58px;bottom:56px;z-index:1000001;width:260px;padding:10px 14px;background:#fff;border:1px solid #d9dde1;border-radius:9px;box-shadow:0 8px 25px #0002;font:12px Arial}#vm-set.hide{display:none}#vm-set b{display:block;margin:5px 0}#vm-set label{display:flex;align-items:center;gap:6px;margin:5px 0}#vm-set input[type=number]{width:55px}
+#vm-hover{position:absolute;z-index:999997;display:none;pointer-events:none;max-width:540px;padding:8px 10px;background:#161616f0;border-radius:6px;color:#f1f3f5;font:11px Arial}#vm-hover>div{display:flex;gap:10px}#vm-hover img{display:none;max-width:180px;max-height:220px;object-fit:contain}.vd{margin:3px 0}.vl{display:inline-block;min-width:68px;color:#9ca3af;font-size:10px}.susd{padding:2px 5px;border:2px solid #f59e0b;border-radius:4px;background:#fff7ed;color:#111;font-weight:800}.sort{padding:2px 6px;border-radius:20px;font-weight:800}.sort.y{background:#fde047;color:#111}.sort.n{background:#dc2626;color:#fff}
+.vm-drop-inline{margin-left:8px;display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px;font-family:Arial}.vm-floor-btn,.vm-tag-btn{min-height:24px;padding:4px 8px;border:1px solid #94a3b8;border-radius:7px;background:#fff;cursor:pointer;font:700 12px Arial}.vm-floor-btn.active{background:#0b74d1;color:#fff}.vm-tag-btn[disabled]{opacity:.6}.vm-sussy{margin-left:8px;padding:3px 8px;border:1px solid #f59e0b;border-radius:20px;background:#fff7ed;color:#7c2d12;font:800 11px Arial}.vm-sussy.clear{border-color:#22c55e;background:#f0fdf4;color:#14532d}.vm-sussy-row td,.vm-sussy-row td a{background:#fef9c3!important}.vm-sussy-cell{outline:3px dashed #2563ebb3!important;outline-offset:-4px!important;background:#fff7ed!important}
+.vm-fud-red{background:#fecaca!important}.vm-fud-yellow{background:#fef9c3!important}.vm-fud-green{background:#bbf7d0!important}.vm-fud{display:block;margin-top:2px;color:#111827;font-size:11px;user-select:none;pointer-events:none}.vm-fud-cell a::selection{background:#2563eb!important;color:#fff!important}#table-inventory tr,#table-inventory td{height:auto!important;white-space:nowrap!important;vertical-align:middle!important}div[data-section-type=inventory] div[style*=overflow-y]{overflow-y:visible!important;max-height:none!important;height:auto!important}`;document.head.appendChild(s)}
+function ui(el){el.dataset.vmUi='1';return el}
+function ensureUI(){css();if(!$('#vm-toast')){let x=ui(document.createElement('div'));x.id='vm-toast';document.body.append(x)}if(!$('#vm-hover')){let x=ui(document.createElement('div'));x.id='vm-hover';x.innerHTML='<div><img><section><div class="ht"></div><div class="hd"></div></section></div>';document.body.append(x)}if($('#vm-gear'))return;let g=ui(document.createElement('button')),p=ui(document.createElement('div'));g.id='vm-gear';g.textContent='⚙';g.title='Stow Andons settings';p.id='vm-set';p.className='hide';p.innerHTML='<b>Print</b><label><input type="checkbox" data-k="p">Print Dropzone Label</label><label>Quantity <input type="number" min="1" max="99" data-k="q"></label><b>Hover</b><label><input type="checkbox" data-k="i">Image</label><label>Width <input type="number" min="50" max="180" data-k="iw"></label><label><input type="checkbox" data-k="t">Title</label><label><input type="checkbox" data-k="d">Dimensions</label><label><input type="checkbox" data-k="w">Weight</label><label><input type="checkbox" data-k="s">Sortable</label>';document.body.append(g,p);g.onclick=e=>{e.stopPropagation();p.classList.toggle('hide');g.classList.toggle('on',!p.classList.contains('hide'))};p.onmousedown=e=>e.stopPropagation();document.addEventListener('mousedown',()=>{p.classList.add('hide');g.classList.remove('on')});$$('input',p).forEach(e=>{let k=e.dataset.k,key=CK[k],num=e.type==='number';if(num)e.value=getC(key)||(k==='q'?'2':'150');else e.checked=bool(key,k!=='p');e.onchange=()=>{if(num){let lo=+e.min,hi=+e.max,v=Math.min(hi,Math.max(lo,+e.value||(k==='q'?2:150)));e.value=v;setC(key,v)}else setC(key,e.checked?'1':'0')}})}
+function toast(m,t='s'){ensureUI();let x=$('#vm-toast');clearTimeout(toastT);x.textContent=m;x.className=t;x.style.opacity=1;toastT=setTimeout(()=>x.style.opacity=0,2200)}
+function setting(k,d){let e=$(`#vm-set [data-k="${k}"]`);return e?(e.type==='checkbox'?e.checked:+e.value):(typeof d==='boolean'?bool(CK[k],d):+(getC(CK[k])||d))}
+function hex(s){return[...new TextEncoder().encode(s)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+function print(d){let h=hex(d),u=new URL('http://localhost:5965/printer'),q=Math.min(99,Math.max(1,setting('q',2)||2));Object.entries({action:'print',type:'barcode',data:h,text:h,quantity:String(q),desc:'',seq:String(Math.floor(Math.random()*9e9)+1e9)}).forEach(([k,v])=>u.searchParams.set(k,v));return new Promise((ok,no)=>GM_xmlhttpRequest({method:'GET',url:u.toString(),timeout:15000,onload:r=>r.status<300?ok():no(Error('HTTP '+r.status)),onerror:()=>no(Error('Network')),ontimeout:()=>no(Error('Timeout'))}))}
+function move(name,b){if(b?.disabled)return;let c=cid(),d=dest(name);if(!c||!d)return toast(!c?'No container in URL':'Bad destination','e');if(b){b.disabled=true;b.dataset.old=b.textContent;b.textContent='Moving…'}let done=(m,e)=>{if(b){b.disabled=false;b.textContent=m;setTimeout(()=>{if(b.isConnected)b.textContent=b.dataset.old},1200)}focus(80);focus(400);if(e)toast(m,'e')};GM_xmlhttpRequest({method:'POST',url:MOVE,timeout:15000,headers:{'Content-Type':'application/json'},data:JSON.stringify({sourceScannableId:null,destinationScannableId:d,containerScannableId:c,confirmed:'true'}),onload:r=>{if(r.status>=300)return done('Failed '+r.status,1);done('Moved ✓');toast('Moved to '+d);if(setting('p',false))print(d).catch(e=>toast('Print failed: '+e.message,'e'))},onerror:()=>done('Move failed',1),ontimeout:()=>done('Timed out',1)})}
+function drops(){let a=floor()==='P1'?p1:upper;return a.map(x=>`<button class="vm-tag-btn" data-d="${x[0]}" title="${x[1]}">${x[0]}</button>`).join('')+'<button class="vm-tag-btn" data-d="Prime" title="dz-P-PRIME">Prime</button>'}
+function wire(r){$$('.vm-tag-btn',r).forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();move(b.dataset.d,b)})}
+function setFloor(f){if(!floors.includes(f))return;setC(CK.f,f);$$('.vm-floor-btn').forEach(b=>b.classList.toggle('active',b.dataset.floor===f));let x=$('#vm-drops');if(x){x.innerHTML=drops();wire(x)}toast('Floor set to '+f);focus()}
+function inline(){if(!page()||$('.vm-drop-inline'))return;let parent,label;for(let c of $$('.a-box-inner .a-row .a-column.a-span8')){label=$$('span',c).find(x=>clean(x.textContent)==='Inventory');if(label){parent=c;break}}if(!label)return;let f=floors.includes(getC(CK.f))?getC(CK.f):'P2';setC(CK.f,f);let w=ui(document.createElement('span'));w.className='vm-drop-inline';w.innerHTML=`<b>Floor:</b>${floors.map(x=>`<button class="vm-floor-btn ${x===f?'active':''}" data-floor="${x}">${x}</button>`).join('')}<b>| Drop:</b><span id="vm-drops">${drops()}</span>`;(parent.querySelector('span.help')||label).after(w);$$('.vm-floor-btn',w).forEach(b=>b.onclick=e=>{e.preventDefault();e.stopPropagation();setFloor(b.dataset.floor)});wire(w);sussyBadge()}
+function table(){return $('#table-inventory')}
+function idx(t=table()){let o={c:-1,f:-1,q:-1};if(!t)return o;$$('thead th',t).forEach((h,i)=>{let id=clean(h.id).toLowerCase(),x=clean(h.textContent).replace(/\(.*?\)/g,'').toLowerCase();if(id==='inventory-container'||x==='container')o.c=i;if(id==='inventory-fnsku'||x==='fnsku')o.f=i;if(id==='inventory-quantity'||x.startsWith('quantity'))o.q=i});return o}
+function rows(t=table()){return t?$$('tbody tr',t).filter(r=>r.cells?.length):[]}
+function parseBool(x){x=clean(x).toLowerCase();return /^(true|yes|1)$/.test(x)?true:/^(false|no|0)$/.test(x)?false:null}
+function susDim(x){let a=String(x||'').match(/\d+(?:\.\d+)?/g);if(!a||a.length<3)return false;a=a.slice(0,3);let n=a.map(Number),eq=(x,y)=>Math.abs(x-y)<.001,round=a.filter(x=>/\.00$/.test(x)).length;return eq(n[0],n[1])||eq(n[0],n[2])||eq(n[1],n[2])||round>=3||(Math.min(...n)<=2.001&&round>=2)}
+function product(code){code=clean(code);if(!code)return Promise.resolve({});if(pc.has(code))return pc.get(code);let p=new Promise(ok=>GM_xmlhttpRequest({method:'POST',url:PROD,timeout:15000,headers:{'Content-Type':'application/x-www-form-urlencoded'},data:'s='+encodeURIComponent(code),onload:r=>{if(r.status!==200){pc.delete(code);return ok({})}try{let d=new DOMParser().parseFromString(r.responseText,'text/html'),tb=$('.a-box-group .a-keyvalue',d)||$('.a-keyvalue',d),im=$('.a-box-group img',d)||$('img',d),o={title:'',dims:'',weight:'',sortable:null,img:im?.getAttribute('src')||''};$$('tr',tb||d).forEach(tr=>{let h=clean($('th',tr)?.textContent).toLowerCase(),v=clean($('td',tr)?.textContent);if(h==='title')o.title=clean($('td a',tr)?.textContent||v);else if(h.includes('dimensions'))o.dims=v;else if(h.includes('weight'))o.weight=v;else if(h.includes('sortable'))o.sortable=parseBool(v)});o.sus=susDim(o.dims);ok(o)}catch{pc.delete(code);ok({})}},onerror:()=>{pc.delete(code);ok({})},ontimeout:()=>{pc.delete(code);ok({})}}));pc.set(code,p);return p}
+function esc(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function show(o){let h=$('#vm-hover'),im=$('#vm-hover img'),ti=$('#vm-hover .ht'),de=$('#vm-hover .hd'),parts=[];im.style.display=setting('i',true)&&o.img?'block':'none';if(im.style.display==='block'){im.src=o.img;im.style.width=Math.min(180,Math.max(50,setting('iw',150)||150))+'px'}ti.textContent=setting('t',true)?o.title||'':'';if(setting('d',true)&&o.dims)parts.push(`<div class="vd"><span class="vl">Dimensions</span><span class="${o.sus?'susd':''}">${esc(o.dims)}</span></div>`);if(setting('w',true)&&o.weight)parts.push(`<div class="vd"><span class="vl">Weight</span>${esc(o.weight)}</div>`);if(setting('s',true)&&typeof o.sortable==='boolean')parts.push(`<div class="vd"><span class="vl">Sortable</span><span class="sort ${o.sortable?'y':'n'}">${o.sortable?'TRUE':'FALSE'}</span></div>`);de.innerHTML=parts.join('');if(im.style.display==='none'&&!ti.textContent&&!parts.length)return hide();h.style.display='block';pos()}
+function pos(){let h=$('#vm-hover');if(h){h.style.left=hx+18+'px';h.style.top=hy+18+'px'}}function hide(){hover='';let h=$('#vm-hover');if(h)h.style.display='none'}
+function hovers(){if(!page())return;let t=table(),ix=idx(t);if(!t||ix.f<0)return;rows(t).forEach(r=>{let a=r.cells[ix.f]?.querySelector('a');if(!a||a.dataset.vmh)return;a.dataset.vmh=1;a.onmouseenter=()=>{let c=clean(a.textContent);hover=c;product(c).then(o=>{if(hover===c)show(o)})};a.onmouseleave=hide;a.onmousemove=e=>{hx=e.pageX;hy=e.pageY;pos()}})}
+function sussyBadge(){let b=$('#vm-sussy');if(b)return b;let d=$('#vm-drops');if(!d)return null;b=ui(document.createElement('span'));b.id='vm-sussy';b.className='vm-sussy';b.textContent='Sussy: checking…';d.after(b);return b}
+function qty(c){let n=Number(clean(c?.textContent).replace(/[^0-9.]/g,''));return Number.isFinite(n)&&n>0?n:1}
+function sig(){let t=table(),x=idx(t);if(!t||x.f<0)return'';return rows(t).map(r=>clean(r.cells[x.f]?.querySelector('a')?.textContent||r.cells[x.f]?.textContent)+':'+clean(r.cells[x.q]?.textContent)).join('|')}
+function maybeSussy(){if(!page())return;let s=sig();if(!s||s===lastSig)return;lastSig=s;clearTimeout(st);st=setTimeout(scanSussy,250)}
+async function scanSussy(){let t=table(),x=idx(t),rs=rows(t);if(!t||x.f<0||!rs.length)return;let my=++seq,b=sussyBadge(),bad=0,total=0,badQty=0;b.textContent='Sussy: checking…';rs.forEach(r=>{r.classList.remove('vm-sussy-row');r.cells[x.f]?.classList.remove('vm-sussy-cell');total+=qty(r.cells[x.q])});await Promise.all(rs.map(async r=>{let c=clean(r.cells[x.f]?.querySelector('a')?.textContent||r.cells[x.f]?.textContent),o=await product(c);if(my!==seq||!o.sus)return;bad++;badQty+=qty(r.cells[x.q]);r.classList.add('vm-sussy-row');r.cells[x.f]?.classList.add('vm-sussy-cell')}));if(my!==seq)return;b.className='vm-sussy'+(bad?'':' clear');b.textContent=`Sussy: ${bad}/${rs.length} (${Math.round(bad/rs.length*100)}%)`;b.title=`${badQty}/${total} units (${total?Math.round(badQty/total*100):0}%)`}
+function fudRemain(n){let d=n-Date.now(),future=d>=0;d=Math.abs(d);let h=Math.floor(d/36e5),m=Math.floor(d%36e5/6e4);return future?`${h}h ${m}m`:`OVERDUE: ${h}h ${m}m`}
+function applyFud(){let t=table(),x=idx(t);if(!t||x.c<0||x.f<0)return;rows(t).forEach(r=>{let cc=r.cells[x.c],fc=r.cells[x.f],c=clean(cc?.querySelector('a')?.textContent||cc?.textContent),f=clean(fc?.querySelector('a')?.textContent||fc?.textContent),n=fud.get(c+'||'+f),lab=$('.vm-fud',fc);r.classList.remove('vm-fud-red','vm-fud-yellow','vm-fud-green');fc?.classList.remove('vm-fud-cell');if(!n){lab?.remove();return}let hr=(n-Date.now())/36e5;r.classList.add(hr<=2?'vm-fud-red':hr<=8?'vm-fud-yellow':'vm-fud-green');fc.classList.add('vm-fud-cell');if(!lab){lab=ui(document.createElement('div'));lab.className='vm-fud';fc.append(lab)}let tx='FUD: '+fudRemain(n);if(lab.textContent!==tx)lab.textContent=tx})}
+function loadFud(){GM_xmlhttpRequest({method:'GET',url:FUD,timeout:30000,onload:r=>{if(r.status>=300)return;try{let j=JSON.parse(r.responseText),m=new Map;for(let a of j?.reportEntityList||[]){let c=clean(a.scannableId),f=clean(a.fnSku),n=+a.needByDate;if(n&&n<1e12)n*=1000;if(c&&f&&n)m.set(c+'||'+f,n)}fud=m;applyFud()}catch(e){console.error('[Stow Andons] FUD parse',e)}},onerror:()=>{},ontimeout:()=>{}})}
+function refresh(){ensureUI();inline();hovers();applyFud();maybeSussy()}
+function schedule(ms=100){clearTimeout(rt);rt=setTimeout(refresh,ms)}
+css();let start=()=>{refresh();loadFud();let ob=new MutationObserver(r=>{let own=r.length&&r.every(m=>m.target instanceof Element&&m.target.closest('[data-vm-ui="1"]'));if(!own)schedule()});ob.observe(document.body,{childList:true,subtree:true});let fi=setInterval(loadFud,30*60*1000);addEventListener('popstate',()=>schedule());addEventListener('hashchange',()=>schedule());addEventListener('pagehide',()=>{ob.disconnect();clearInterval(fi);clearTimeout(rt);clearTimeout(st)},{once:true})};document.readyState==='loading'?addEventListener('DOMContentLoaded',start,{once:true}):start();
 })();
