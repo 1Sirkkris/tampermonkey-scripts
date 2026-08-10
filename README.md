@@ -41,7 +41,7 @@ Tampermonkey 5.5.6232 or newer can import ZIP files directly from a URL.
 | AFT Tools Master CLEAN TEST | 0.3.5 | EditItems, FcSku Flip and MoveItems helpers | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/AFT_Tools_Master_CLEAN_TEST.user.js) |
 | SidelineApp Helper CLEAN TEST | 1.4.3 | SidelineApp Helper | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Helper_CLEAN_TEST.user.js) |
 | Stow Andons Helper — Safe Trim TEST | 5.4.5-test | Stow Andons Helper | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/Stow_Andons_Helper_v5.4_TEST.user.js) |
-| Bin check Overlay TEST | 7.3.2-test | Bin check Overlay 7.2 | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/bin-overlay-v7-3-test/scripts/Bin_check_Overlay_v7.3-test.user.js) |
+| Bin check Overlay TEST | 7.3.3-test | Bin check Overlay 7.2 | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/bin-overlay-v7-3-test/scripts/Bin_check_Overlay_v7.3-test.user.js) |
 | SidelineApp Standalone Tote Queue TEST | 0.3.0 | Tote Queue inside either SidelineApp Helper | [Install](https://raw.githubusercontent.com/1Sirkkris/tampermonkey-scripts/main/scripts/SidelineApp_Fast_Tote_Queue_TEST.user.js) |
 
 ## Personal utility
